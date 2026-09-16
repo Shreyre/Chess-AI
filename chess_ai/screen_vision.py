@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import chess
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
 
 
 @dataclass(frozen=True)
@@ -85,6 +85,16 @@ def tile_features(image):
     mask[:3] = mask[-3:] = False
     mask[:, :3] = mask[:, -3:] = False
     mask[:7, :7] = mask[:7, -7:] = mask[-7:, :7] = mask[-7:, -7:] = False
+    # Keep outlined piece interiors when their fill matches the square's color.
+    enclosed = Image.fromarray((mask > 0.2).astype(np.uint8) * 255).copy()
+    ImageDraw.floodfill(enclosed, (0, 0), 128)
+    mask[np.asarray(enclosed) == 0] = 1
+    # ponytail: pieces must extend beyond the central 45%; use theme templates for miniature pieces.
+    outside = mask.copy()
+    outside[11:29, 11:29] = 0
+    outside[:12, :12] = outside[:12, -12:] = outside[-12:, :12] = outside[-12:, -12:] = 0
+    if not np.any(outside) and np.all(mask[18:22, 18:22] > 0.5):
+        mask[11:29, 11:29] = 0
     pixels = tile * mask[:, :, None]
     return np.concatenate((mask[:, :, None] * 2, pixels), axis=2).astype(np.float32).ravel()
 
@@ -146,7 +156,7 @@ class GameTracker:
         self.color = color
         self.pending = None
 
-    def observe(self, observed):
+    def observe(self, observed, retry_pending=False):
         if self.pending is not None:
             after = self.board.copy(stack=True)
             after.push(self.pending)
@@ -162,14 +172,28 @@ class GameTracker:
                 self.pending = None
                 return "reply"
             if board_labels(self.board) == observed:
+                # Only an explicit resume can retry an unchanged, verified board.
+                if retry_pending and not self.pending.promotion:
+                    self.pending = None
+                    return "retry"
                 return "pending"
-            raise UncertainBoard("The screen does not match the move just sent")
+            return self.rewind(observed, "The screen does not match the move just sent")
         if board_labels(self.board) == observed:
             return "same"
         if self.board.turn == self.color:
-            raise UncertainBoard("Position changed on the AI's turn. Recalibrate for a new game.")
+            return self.rewind(observed, "Position changed on the AI's turn. Recalibrate for a new game.")
         move = matching_move(self.board, observed)
         if move is None:
-            raise UncertainBoard("The screen is not a legal continuation of this game")
+            return self.rewind(observed, "The screen is not a legal continuation of this game")
         self.board.push(move)
         return "opponent_move"
+
+    def rewind(self, observed, error):
+        earlier = self.board.copy(stack=True)
+        while earlier.move_stack:
+            earlier.pop()
+            if board_labels(earlier) == observed:
+                self.board = earlier
+                self.pending = None
+                return "rewind"
+        raise UncertainBoard(error)

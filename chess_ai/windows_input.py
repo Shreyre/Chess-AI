@@ -70,7 +70,7 @@ class WindowsInput:
     def stopped(self, stop):
         return stop.is_set() or bool(self.api.GetAsyncKeyState(0x77) & 0x8000)  # F8
 
-    def click(self, point, target, stop):
+    def move_pointer(self, point, target, stop):
         if self.stopped(stop):
             raise InterruptedError("Stopped with F8")
         if self.window_at(point) != target or self.foreground() != target:
@@ -78,12 +78,26 @@ class WindowsInput:
         left, top, width, height = self.desktop()
         x, y = point
         if not left <= x < left + width or not top <= y < top + height:
-            raise ValueError("Click would be outside the desktop")
+            raise ValueError("Pointer would be outside the desktop")
         movement = Input(0, InputUnion(mi=MouseInput(round((x-left)*65535/(width-1)),
                                                    round((y-top)*65535/(height-1)), 0,
                                                    0x8000 | 0x4000 | 0x0001, 0, 0)))
         if self.api.SendInput(1, ctypes.byref(movement), ctypes.sizeof(Input)) != 1:
             raise OSError("Windows could not move the pointer")
+
+    def park_pointer(self, area, target, stop):
+        # Keep cursor highlights and hover effects out of the board capture.
+        x, y = (area.left + area.right) // 2, (area.top + area.bottom) // 2
+        left, top, width, height = self.desktop()
+        for point in ((x, area.top - 64), (x, area.bottom + 64),
+                      (area.left - 64, y), (area.right + 64, y)):
+            if (left <= point[0] < left + width and top <= point[1] < top + height
+                    and self.window_at(point) == target):
+                self.move_pointer(point, target, stop)
+                return
+
+    def click(self, point, target, stop):
+        self.move_pointer(point, target, stop)
         time.sleep(0.05)
         if self.stopped(stop) or self.window_at(point) != target or self.foreground() != target:
             raise InterruptedError("Input stopped before clicking")

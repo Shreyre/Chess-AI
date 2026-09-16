@@ -1,6 +1,7 @@
 """Screen recognition and tracking checks; never click the user's desktop."""
 
 from pathlib import Path
+import queue
 import sys
 import tempfile
 import threading
@@ -103,6 +104,45 @@ class ScreenChecks(unittest.TestCase):
         ImageDraw.Draw(obscured).rectangle((64, 0, 127, 63), fill=(150, 30, 180))
         self.assertNotEqual(reader.read(obscured), board_labels(chess.Board()))
 
+    def test_legal_move_dots_are_empty_squares(self):
+        for white_bottom in (True, False):
+            board = chess.Board()
+            board.push_uci("a2a3")
+            reader = PieceReader(render(chess.Board(), white_bottom), white_bottom)
+            image = render(board, white_bottom, highlighted=(chess.A3,))
+            draw = ImageDraw.Draw(image)
+            for row in range(8):
+                for col in range(8):
+                    if board.piece_at(screen_square(row, col, white_bottom)) is None:
+                        x, y = col * 64, row * 64
+                        draw.ellipse((x+22, y+22, x+42, y+42), fill=(90, 90, 90))
+            self.assertEqual(reader.read(image), board_labels(board))
+            # Actual reported square: the rank digit protrudes beside the move dot.
+            with Image.open(Path(__file__).parent / "fixtures/legal-move-dot.png") as dot:
+                image.paste(dot.resize((64, 64)), (0, 4*64))
+            self.assertEqual(reader.read(image), board_labels(board))
+            # Larger overlays still pause recognition instead of hiding a piece.
+            ImageDraw.Draw(image).rectangle((64*3+8, 64*3+8, 64*4-8, 64*4-8), fill=(150, 30, 180))
+            with self.assertRaises(UncertainBoard):
+                reader.read(image)
+
+    def test_white_king_on_matching_light_background(self):
+        fixtures = Path(__file__).parent / "fixtures"
+        with Image.open(fixtures / "white-king-dark-square.png") as dark, \
+                Image.open(fixtures / "white-king-light-square.png") as light:
+            for white_bottom in (True, False):
+                board = chess.Board()
+                initial = render(board, white_bottom)
+                area = BoardArea(0, 0, 512, 512)
+                x, y = area.center(chess.E1, white_bottom)
+                initial.paste(dark.resize((64, 64)), (x-32, y-32))
+                reader = PieceReader(initial, white_bottom)
+                board.set_piece_at(chess.H3, board.remove_piece_at(chess.E1))
+                moved = render(board, white_bottom)
+                x, y = area.center(chess.H3, white_bottom)
+                moved.paste(light.resize((64, 64)), (x-32, y-32))
+                self.assertEqual(reader.read(moved), board_labels(board))
+
     def test_confirm_moves_and_fast_opponent(self):
         tracker = GameTracker(chess.WHITE)
         tracker.pending = chess.Move.from_uci("e2e4")
@@ -122,6 +162,172 @@ class ScreenChecks(unittest.TestCase):
         initial = chess.Board()
         initial.push_uci("d2d4")
         self.assertEqual(black.observe(board_labels(initial)), "opponent_move")
+
+    def test_resume_rechecks_pending_move_before_allowing_one_retry(self):
+        for tokens, result in (((), "retry"), (("e2e4",), "own_move"),
+                               (("e2e4", "e7e5"), "reply")):
+            with self.subTest(tokens=tokens):
+                tracker = GameTracker(chess.WHITE)
+                tracker.pending = chess.Move.from_uci("e2e4")
+                screen = chess.Board()
+                for token in tokens:
+                    screen.push_uci(token)
+                self.assertEqual(tracker.observe(board_labels(screen), retry_pending=True), result)
+                self.assertIsNone(tracker.pending)
+                self.assertEqual(tracker.board.move_stack, screen.move_stack)
+        tracker.pending = chess.Move.from_uci("g1f3")
+        with self.assertRaises(UncertainBoard):
+            tracker.observe((".",) * 64, retry_pending=True)
+        self.assertEqual(tracker.pending.uci(), "g1f3")
+        tracker.board = chess.Board("7k/P7/8/8/8/8/8/4K3 w - - 0 1")
+        tracker.pending = chess.Move.from_uci("a7a8n")
+        self.assertEqual(tracker.observe(board_labels(tracker.board), retry_pending=True), "pending")
+        self.assertEqual(tracker.pending.uci(), "a7a8n")
+
+    def test_resume_retries_missed_clicks_once_then_pauses(self):
+        import numpy as np
+        from chess_ai.screen_player import ScreenPlayer
+        player = ScreenPlayer.__new__(ScreenPlayer)
+        player.tracker = GameTracker(chess.WHITE)
+        move = chess.Move.from_uci("e2e4")
+        player.tracker.pending = move
+        player.searches = {0: "old unconfirmed target"}
+        player.stop_signal = threading.Event()
+        player.messages = queue.Queue()
+        player.area = BoardArea(0, 0, 512, 512)
+        player.target = 17
+        clicks = []
+        checks = iter([False] * 30 + [True])
+        player.windows = SimpleNamespace(stopped=lambda _: next(checks), foreground=lambda: 17,
+                                         park_pointer=lambda *_: None, window_at=lambda _: 17,
+                                         click=lambda point, *_: clicks.append(point))
+        player.reader = PieceReader(render(chess.Board()))
+        search = SimpleNamespace(policy=lambda _: ([move], np.array([1.0], dtype=np.float32)))
+        # The game ignores both clicks: resume may try once, never loop clicking.
+        with patch.object(ScreenPlayer, "refresh_model", return_value=None), \
+                patch("chess_ai.screen_player.select_move", return_value=(move, search)), \
+                patch("chess_ai.screen_player.ImageGrab.grab", return_value=render(chess.Board())), \
+                patch("chess_ai.screen_player.time.monotonic", side_effect=range(1, 100)), \
+                patch.object(player.stop_signal, "wait", return_value=False):
+            player.play_loop(Path("unused.pt"), 1, 0.2)
+        self.assertEqual(clicks, [(288, 416), (288, 288)])
+        self.assertEqual(player.tracker.board.move_stack, [])
+        self.assertEqual(player.tracker.pending, move)
+        self.assertEqual(player.searches[0][0], "e2e4")
+        self.assertTrue(player.stop_signal.is_set())
+
+    def test_undo_recovers_an_exact_earlier_position(self):
+        tracker = GameTracker(chess.WHITE)
+        for token in ("e2e4", "e7e5", "g1f3", "b8c6"):
+            tracker.board.push_uci(token)
+        tracker.pending = chess.Move.from_uci("f1c4")
+        before = tracker.board.copy()
+        before.pop()
+        before.pop()
+        self.assertEqual(tracker.observe(board_labels(before)), "rewind")
+        self.assertEqual(tracker.board.move_stack, before.move_stack)
+        self.assertIsNone(tracker.pending)
+        # A repetition is a forward move, not an undo to the same old position.
+        tracker = GameTracker(chess.WHITE)
+        for token in ("g1f3", "g8f6", "f3g1"):
+            tracker.board.push_uci(token)
+        self.assertEqual(tracker.observe(board_labels(chess.Board())), "opponent_move")
+        self.assertEqual(len(tracker.board.move_stack), 4)
+
+    def test_undo_discards_learning_targets_for_removed_moves(self):
+        from chess_ai.screen_player import ScreenPlayer
+        player = ScreenPlayer.__new__(ScreenPlayer)
+        player.tracker = GameTracker(chess.BLACK)
+        for token in ("e2e4", "e7e5", "g1f3", "b8c6"):
+            player.tracker.board.push_uci(token)
+        earlier = player.tracker.board.copy()
+        earlier.pop()
+        earlier.pop()
+        player.searches = {1: "keep", 3: "undone", 4: "unconfirmed"}
+        player.stop_signal = threading.Event()
+        player.messages = queue.Queue()
+        player.area = BoardArea(0, 0, 512, 512)
+        player.target = 17
+        checks = iter((False, False, True))
+        player.windows = SimpleNamespace(stopped=lambda _: next(checks), foreground=lambda: 17,
+                                         park_pointer=lambda *_: None)
+        player.reader = SimpleNamespace(read=lambda _: board_labels(earlier))
+        with patch.object(ScreenPlayer, "refresh_model", return_value=None), \
+                patch("chess_ai.screen_player.ImageGrab.grab", return_value=render(earlier)):
+            player.play_loop(Path("unused.pt"), 1, 0.2)
+        self.assertEqual(player.searches, {1: "keep"})
+        self.assertEqual(player.tracker.board.move_stack, earlier.move_stack)
+
+    def test_screen_model_follows_latest_saved_iteration(self):
+        import torch
+        from chess_ai.model import ChessNet, atomic_save, model_snapshot
+        from chess_ai.screen_player import ScreenPlayer
+
+        player = ScreenPlayer.__new__(ScreenPlayer)
+        player.model = player.model_stamp = None
+        player.messages = queue.Queue()
+        model = ChessNet(channels=8, blocks=1)
+        with tempfile.TemporaryDirectory() as directory:
+            selected = Path(directory) / "model.pt"
+            latest = selected.with_name("latest.pt")
+            atomic_save(model_snapshot(model, 10), selected)
+            atomic_save(model_snapshot(model, 11), latest)
+            first = player.refresh_model(selected)
+            self.assertEqual(player.messages.get_nowait(), ("model", 11))
+            self.assertIs(player.refresh_model(selected), first)
+            self.assertTrue(player.messages.empty())
+
+            with torch.no_grad():
+                next(model.parameters()).fill_(0.125)
+            atomic_save(model_snapshot(model, 12), latest)
+            updated = player.refresh_model(selected)
+            self.assertIsNot(updated, first)
+            torch.testing.assert_close(next(updated.parameters()), next(model.parameters()))
+            self.assertEqual(player.messages.get_nowait(), ("model", 12))
+
+            # Explicit historical models must not switch to the run's latest model.
+            historical = selected.with_name("model-000010.pt")
+            atomic_save(model_snapshot(first, 10), historical)
+            player.refresh_model(historical)
+            self.assertEqual(player.messages.get_nowait(), ("model", 10))
+
+            # A broken save pauses the player rather than silently using old weights.
+            latest.write_bytes(b"incomplete checkpoint")
+            with self.assertRaises(Exception):
+                player.refresh_model(selected)
+
+    def test_reposition_preserves_game_and_rejects_unrelated_board(self):
+        from chess_ai.screen_player import ScreenPlayer
+        player = ScreenPlayer.__new__(ScreenPlayer)
+        player.reader = PieceReader(render(chess.Board()))
+        player.tracker = GameTracker(chess.WHITE)
+        for token in ("e2e4", "e7e5"):
+            player.tracker.board.push_uci(token)
+        player.tracker.pending = chess.Move.from_uci("g1f3")
+        player.searches = {0: "confirmed", 2: "pending"}
+        player.windows = SimpleNamespace(window_at=lambda _: 17)
+        original = player.tracker.board.copy()
+        area = BoardArea(200, 100, 1008, 908)
+        player.reposition_board(render(original).resize((808, 808)), area)
+        self.assertEqual(player.area, area)
+        self.assertEqual(player.tracker.board.move_stack, original.move_stack)
+        self.assertEqual(player.tracker.pending.uci(), "g1f3")
+        self.assertEqual(player.searches, {0: "confirmed", 2: "pending"})
+        # Accept the already-sent move and its reply at the new location.
+        after = original.copy()
+        after.push_uci("g1f3")
+        after.push_uci("b8c6")
+        player.reposition_board(render(after).resize((808, 808)), area)
+        self.assertEqual(player.tracker.board.move_stack, after.move_stack)
+        self.assertIsNone(player.tracker.pending)
+        with self.assertRaises(UncertainBoard):
+            unrelated = after.copy()
+            unrelated.push_uci("f1c4")
+            player.reposition_board(render(unrelated), BoardArea(0, 0, 512, 512))
+        self.assertEqual(player.area, area)
+        self.assertEqual(player.tracker.board.move_stack, after.move_stack)
+        player.reposition_board(render(original), area)
+        self.assertEqual(player.searches, {0: "confirmed"})
 
     def test_castling_en_passant_and_promotions(self):
         for fen, tokens in (
@@ -170,6 +376,9 @@ class ScreenChecks(unittest.TestCase):
             windows.click((-100, 100), 17, stop)
         self.assertEqual(events, [0x8000 | 0x4000 | 1, 2, 4])
         events.clear()
+        windows.park_pointer(BoardArea(-300, 200, 212, 712), 17, stop)
+        self.assertEqual(events, [0x8000 | 0x4000 | 1])
+        events.clear()
         stop.set()
         with self.assertRaises(InterruptedError):
             windows.click((-100, 100), 17, stop)
@@ -194,6 +403,7 @@ class ScreenChecks(unittest.TestCase):
         try:
             controller = ScreenPlayer(root, Path("runs/main/model.pt"))
             root.update_idletasks()
+            self.assertTrue(root.attributes("-topmost"))
             self.assertTrue(controller.start_button.instate(["disabled"]))
             self.assertEqual(controller.color.get(), "White")
             self.assertIsNone(controller.reader)

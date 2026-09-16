@@ -118,7 +118,8 @@ Windows window; the dashboard is not required.
 3. Click **Select board area**, then drag precisely around the 64 squares.
    Small selection errors snap to the grid. Exclude player names and clocks.
 4. Check the captured preview. Click **Start / resume**, then click the game
-   window so it is in front. Keep the controller clear of the selected board.
+   window so it is in front. The controller stays on top; keep it clear of the
+   selected board.
 5. The AI reads visible pieces, waits for the opponent, and clicks its own moves.
    **F8** or **Stop now** stops it. Start/resume continues the tracked game.
 6. For a new game, moved/resized board, different piece theme, or changed board
@@ -132,8 +133,21 @@ users. The controller does not access your account, credentials, or browser DOM.
 The visual reader learns piece templates from the selected starting board. It
 checks legal continuations and waits for stable frames before clicking. It pauses
 on ambiguous readings, unconfirmed clicks, or unexpected positions. It never
-automatically re-clicks an unconfirmed move. CPU inference uses the selected saved
-model.
+automatically re-clicks an unconfirmed move. If a click was missed, clear any
+selected piece and press **Start / resume**: it checks whether the move already
+happened, and allows one new attempt only if the board is still unchanged.
+Promotions still require you to play the move and choose the piece yourself.
+CPU inference uses the selected saved model.
+
+Small central move dots are ignored. After Undo, the player can return to an exact
+earlier position in its tracked history and discards learning targets for the
+undone moves. Use Stop before taking back moves, then Start / resume.
+
+If the browser or board moves or resizes, stop the player and use **Reposition
+board…** to select its new bounds. This keeps the calibrated pieces, move history,
+and confirmed learning records. The selected board must match the tracked game.
+The player moves the pointer outside the board before reading it, keeping cursor
+highlights out of the captured squares when space is available in the game window.
 
 ### Learn while playing
 
@@ -142,8 +156,10 @@ search decisions while playing. Once it recognizes checkmate or an automatic
 draw, it saves the confirmed AI positions with the game's result and starts up
 to 10 learning updates. These updates mix the new game with its existing replay
 buffer, then save both `latest.pt` and `model.pt` in the same run used by the
-dashboard. Wait for **Learning saved**, then select a new starting board and start
-the next game to load the updated model. The weights stay fixed during a game.
+dashboard. The screen player checks `latest.pt` before each AI move and loads any
+saved update, including during a game. Its model label shows the loaded iteration.
+Each move search uses one fixed set of weights. Selecting `model.pt` also follows
+the run's `latest.pt`; standalone or historical checkpoints use the selected file.
 
 For resignations, timeouts, agreed draws or a final board covered by a pop-up,
 press **Stop**, choose **White won**, **Black won** or **Draw**, then click
@@ -170,8 +186,8 @@ Learning updates the weights; it does not guarantee stronger play after every ga
 
 ### Screen-player limits and controls
 
-- Standard, flat 2D boards only. Textured/animated pieces, overlays, check glows,
-  legal-move dots, or very small boards can require disabling visual effects.
+- Standard, flat 2D boards only. Textured/animated pieces, large overlays, check
+  glows, or very small boards can require disabling visual effects.
   Turn off move animations when possible. It cannot read covered or minimized boards.
 - Select the board at its current size. Windows DPI awareness and virtual-desktop
   coordinates support selection on multiple monitors, including negative offsets.
