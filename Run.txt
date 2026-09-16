@@ -1,0 +1,1 @@
+cd /d "C:\Users\patel\OneDrive\Documents\Chess AI" && .venv\Scripts\python.exe -m chess_ai dashboard

@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "local-chess-ai"
+version = "0.1.0"
+description = "From-scratch chess learning through neural self-play and MCTS"
+requires-python = ">=3.10"
+dependencies = ["torch>=2.7,<3", "numpy>=2,<3", "chess==1.11.2"]
+
+[project.optional-dependencies]
+screen = ["Pillow>=11,<14"]
+
+[project.scripts]
+chess-ai = "chess_ai.__main__:main"
+
+[project.gui-scripts]
+chess-ai-screen = "chess_ai.screen_player:main"
+
+[tool.setuptools.packages.find]
+include = ["chess_ai*"]
+
+[tool.setuptools.package-data]
+chess_ai = ["dashboard.html"]

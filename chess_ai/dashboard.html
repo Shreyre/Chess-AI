@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chess AI — Training room</title>
+<style>
+:root{color-scheme:light;--ink:#193247;--muted:#617385;--line:#dce4eb;--paper:#f3f6f9;--blue:#266997;--green:#297454;--white:#fff}
+*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font-family:"Segoe UI",Arial,sans-serif;font-size:15px;line-height:1.5}button,input,select{font:inherit}button,select{cursor:pointer}button:disabled{cursor:default;opacity:.48}button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid #dc9c37;outline-offset:3px}button{border:1px solid var(--line);border-radius:7px;background:white;color:var(--ink);padding:10px 14px;font-weight:600}button:hover:not(:disabled){background:#edf3f8}a{color:var(--blue)}header{background:#193247;color:white;padding:19px 5%;display:flex;align-items:center;justify-content:space-between;gap:16px}.brand{display:flex;align-items:center;gap:11px;font-weight:650;font-size:18px}.brand svg{width:30px;height:30px}.brand small{font-size:13px;color:#b7cbdc;font-weight:400;margin-left:14px}.connection{font-size:13px;color:#c7d7e5;display:flex;align-items:center;gap:8px}.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#99b4c8}.dot.live{background:#87cfab}.dot.error{background:#f3b476}main{max-width:1280px;margin:0 auto;padding:30px 32px 24px}.intro{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;margin-bottom:25px}h1{font-family:Georgia,"Times New Roman",serif;font-weight:400;font-size:38px;line-height:1.15;margin:0 0 7px}h2{font-size:17px;line-height:1.3;margin:0;font-weight:650}p{margin:0;color:var(--muted)}.run{font-size:13px}.run strong{color:var(--ink);font-weight:600}.layout{display:grid;grid-template-columns:minmax(0,1.12fr) minmax(330px,.88fr);gap:26px;align-items:start}.board-panel{padding:20px;background:white;border-radius:12px;box-shadow:0 4px 22px #233c5010}.board-top{display:flex;align-items:center;justify-content:space-between;gap:15px;margin-bottom:12px}.pill{font-size:12px;font-weight:650;border-radius:30px;padding:5px 11px;background:#edf3f8;color:#416780;display:inline-flex;align-items:center;gap:7px}.pill.active{background:#e8f4ed;color:var(--green)}.board-controls{display:flex;align-items:center;gap:8px}select,input{border:1px solid #cdd9e2;border-radius:6px;background:#fff;color:var(--ink);padding:8px 10px;max-width:100%}.board-controls select{max-width:170px;font-size:13px}.icon-button{padding:8px 11px;font-size:13px}.board{width:100%;aspect-ratio:1;background:#f6f8fa;display:flex;align-items:center;justify-content:center;border-radius:7px;overflow:hidden}.board svg{width:100%;height:100%;display:block}.board-placeholder{padding:30px;text-align:center}.board-caption{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:14px 4px 1px;font-size:13px}.board-caption strong{display:block;font-size:15px;color:var(--ink);font-weight:600}.board-caption span{color:var(--muted)}.move{font-variant-numeric:tabular-nums;text-align:right}.right{display:grid;gap:22px}.session{background:#e6eef5;border-radius:10px;padding:21px}.session-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.stage{font-size:12px;color:#527087;font-weight:600}.session p{font-size:13px;margin-top:8px}.controls{display:grid;grid-template-columns:83px 1fr;gap:10px;margin-top:18px;align-items:end}.controls label{font-size:12px;display:block;margin-bottom:5px;color:#466176}.controls input{width:100%;height:42px;background:#f8fbfd}.primary{background:var(--blue);border-color:var(--blue);color:#fff;height:42px}.primary:hover:not(:disabled){background:#1d587f}.stop{margin-top:10px;width:100%;background:transparent;border-color:#b9ccd9;font-size:13px;padding:8px}.progress-track{height:5px;background:#cbdbe6;border-radius:4px;overflow:hidden;margin-top:18px}.progress-fill{height:100%;background:var(--blue);width:0;transition:width .25s}.progress-label{display:flex;justify-content:space-between;font-size:12px;color:#527087;margin-top:7px;gap:15px}.message{font-size:13px;margin-top:10px;min-height:0}.message:empty{display:none}.message.error{color:#a64229}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:15px;padding:0 4px}.stat{padding:0 10px 0 0;border-right:1px solid var(--line)}.stat:last-child{border:0}.stat span{font-size:12px;color:var(--muted);display:block}.stat strong{font-size:27px;font-weight:500;font-variant-numeric:tabular-nums;line-height:1.5}.results{padding:0 4px}.section-head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:11px}.section-head small{font-size:12px;color:var(--muted)}.outcomes{display:flex;height:9px;border-radius:8px;overflow:hidden;background:#e1e8ee;margin-bottom:12px}.outcomes span{transition:width .3s}.white-wins{background:#527db3}.black-wins{background:#334a62}.draws{background:#91b2a5}.truncated{background:#d9b57c}.legend{display:flex;flex-wrap:wrap;gap:9px 17px;font-size:12px;color:var(--muted)}.legend i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:6px}.legend b{color:var(--ink);font-weight:600;margin-left:4px}.learning{grid-column:1/-1;margin-top:0;background:white;padding:21px 24px 18px;border-radius:10px}.learning-head{display:flex;justify-content:space-between;align-items:baseline;gap:15px;margin-bottom:12px}.learning-head p{font-size:12px}.charts{display:grid;grid-template-columns:1fr 1fr;gap:35px}.chart-header{display:flex;justify-content:space-between;font-size:13px;color:var(--muted)}.chart-header strong{color:var(--ink);font-size:16px;font-weight:600}.chart svg{width:100%;height:116px;display:block;overflow:visible}.chart text{font-family:"Segoe UI",Arial,sans-serif;font-size:11px;fill:#7c8c99}.chart-note{font-size:12px;color:#778996;padding-top:5px}.hardware{font-size:12px;padding-top:17px;margin-top:17px;border-top:1px solid var(--line);display:flex;justify-content:space-between;gap:15px;flex-wrap:wrap;color:var(--muted)}.hardware strong{font-weight:600;color:#466176}footer{margin-top:19px;font-size:12px;display:flex;justify-content:space-between;gap:20px;color:var(--muted)}.notice{margin:0 0 18px;background:#fff2df;border:1px solid #e6cc9e;border-radius:7px;padding:10px 14px;font-size:13px;color:#805829}.notice:empty{display:none}@media(max-width:840px){header{padding:16px 24px}.brand small{display:none}main{padding:24px}.layout{grid-template-columns:1fr;gap:20px}.right{grid-template-columns:1fr 1fr;gap:20px}.session{grid-row:1/3}.stats{align-content:start}.learning{grid-column:auto}.intro{align-items:flex-start}h1{font-size:32px}.run{text-align:right}.board-panel{max-width:620px;width:100%;justify-self:center}}@media(max-width:560px){main{padding:21px 15px}.intro{display:block}.run{text-align:left;margin-top:12px}.right{grid-template-columns:1fr}.session{grid-row:auto}.charts{grid-template-columns:1fr;gap:22px}.learning-head{display:block}.learning-head p{margin-top:6px}.board-panel{padding:12px}.board-top{gap:6px}.board-controls{gap:5px}.board-controls select{max-width:113px}.connection{font-size:11px}footer{display:block}.stats{padding:0 8px}.brand{font-size:16px}.board-caption{font-size:12px}.board-caption strong{font-size:14px}}@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+@media(min-width:741px) and (max-width:840px){.layout{grid-template-columns:minmax(0,1.05fr) minmax(300px,.95fr);gap:20px}.right{display:grid;grid-template-columns:1fr}.session{grid-row:auto}.learning{grid-column:1/-1}.board-panel{padding:12px}.board-top{flex-wrap:wrap;gap:8px}.brand small{display:none}.stats{gap:9px}.stat strong{font-size:24px}.intro{align-items:flex-end}.run{text-align:right}}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><svg viewBox="0 0 40 40" aria-hidden="true" fill="none"><path d="M10 33h23M12 29h19c0-9-6-9-4-17l-6-6-2 6-9 9 5 4 7-4" stroke="currentColor" stroke-width="2.7" stroke-linejoin="round"/><circle cx="22" cy="15" r="1.5" fill="currentColor"/></svg>Chess AI <small>Learning from self-play</small></div>
+  <div class="connection"><i class="dot" id="connectionDot"></i><span id="connection">Connecting to your computer</span></div>
+</header>
+<main>
+  <div class="intro"><div><h1>Training room</h1><p>Watch the next move. Follow what it learns.</p></div><div class="run">Local run <strong id="runName">main</strong><br><span id="saved">Reading checkpoint history…</span></div></div>
+  <div class="notice" id="notice" role="status"></div>
+  <div class="layout">
+    <section class="board-panel" aria-label="Self-play board">
+      <div class="board-top"><div class="pill" id="boardStatus"><i class="dot" id="boardDot"></i><span id="boardLabel">Waiting for a game</span></div><div class="board-controls"><select id="game" aria-label="Choose a self-play game"><option value="1">Game 1</option></select><button class="icon-button" id="flip" type="button" aria-label="Flip board orientation">Flip board</button></div></div>
+      <div class="board" id="board" role="img" aria-label="Chess board"><p class="board-placeholder">Loading the board…</p></div>
+      <div class="board-caption"><div><strong id="turn">Ready for self-play</strong><span id="gameDetail">Each side uses the same learning network.</span></div><div class="move"><span>Last move</span><strong id="lastMove">—</strong></div></div>
+    </section>
+    <aside class="right" aria-label="Training controls and statistics">
+      <section class="session">
+        <div class="session-head"><h2 id="sessionTitle">Continue learning</h2><span class="stage" id="phase">Ready</span></div>
+        <p id="sessionDescription">Resume the saved model and watch it play itself.</p>
+        <div class="controls"><div><label for="iterations">Iterations</label><input id="iterations" type="number" min="1" max="10000" value="10" step="1"></div><button class="primary" id="start" type="button">Resume training</button></div>
+        <button class="stop" id="stop" type="button" disabled>Stop after this iteration</button>
+        <div class="progress-track" role="progressbar" aria-label="Current training phase" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="progress"><div class="progress-fill" id="progressFill"></div></div>
+        <div class="progress-label"><span id="progressLabel">Ready when you are</span><span id="elapsed">—</span></div>
+        <div class="message" id="message" role="status" aria-live="polite"></div>
+      </section>
+      <section class="stats" aria-label="Saved training totals"><div class="stat"><span>Games trained</span><strong id="games">—</strong></div><div class="stat"><span>Positions seen</span><strong id="positions">—</strong></div><div class="stat"><span>Learning updates</span><strong id="updates">—</strong></div></section>
+      <section class="results"><div class="section-head"><h2>Game outcomes</h2><small id="outcomeIteration">Last saved iteration</small></div><div class="outcomes" aria-hidden="true"><span class="white-wins" id="whiteBar"></span><span class="black-wins" id="blackBar"></span><span class="draws" id="drawBar"></span><span class="truncated" id="truncatedBar"></span></div><div class="legend"><span><i class="white-wins"></i>White wins<b id="whiteWins">0</b></span><span><i class="black-wins"></i>Black wins<b id="blackWins">0</b></span><span><i class="draws"></i>Draws<b id="draws">0</b></span><span><i class="truncated"></i>Move limit<b id="truncated">0</b></span></div></section>
+    </aside>
+    <section class="learning" aria-label="Learning history"><div class="learning-head"><h2>Learning history</h2><p>Saved after each iteration. Lower loss alone does not mean stronger chess.</p></div><div class="charts"><div class="chart"><div class="chart-header"><span>Move prediction loss</span><strong id="policyLoss">—</strong></div><svg id="policyChart" viewBox="0 0 500 112" role="img" aria-label="Move prediction loss by iteration"></svg></div><div class="chart"><div class="chart-header"><span>Game outcome loss</span><strong id="valueLoss">—</strong></div><svg id="valueChart" viewBox="0 0 500 112" role="img" aria-label="Game outcome prediction loss by iteration"></svg></div></div><p class="chart-note" id="chartNote">History appears after the first saved iteration.</p><div class="hardware"><span>Training device <strong id="device">Auto-detected at start</strong></span><span>Searches per move <strong id="simulations">—</strong></span><span>Parallel games <strong id="parallel">—</strong></span><span>Network parameters <strong id="parameters">—</strong></span></div></section>
+  </div>
+  <footer><span>Boards update during self-play. Checkpoints keep completed iterations.</span><span>Closing this page leaves training running.</span></footer>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+let selectedGame = 1, flipped = false, busy = false, requesting = false, boardKey = '', gameKey = '', lastState;
+const number = value => value == null ? '—' : Number(value).toLocaleString();
+const phases = {idle:'Ready',starting:'Starting',initializing:'Loading model',selfplay:'Self-play',learning:'Learning',saving:'Saving checkpoint',completed:'Session complete',stopped:'Stopped',error:'Needs attention'};
+function chart(id, rows, field, color) {
+  const points = rows.filter(row => Number.isFinite(row[field]));
+  if (!points.length) { $(id).innerHTML = '<text x="250" y="61" text-anchor="middle">No saved history yet</text>'; return; }
+  const values = points.map(row => row[field]), low = Math.min(...values), high = Math.max(...values);
+  const margin = Math.max((high-low)*.15, Math.abs(high)*.05, .005), min = Math.max(0,low-margin), max = high+margin;
+  const x = i => points.length === 1 ? 269 : 43+i*448/(points.length-1), y = v => 81-(v-min)/(max-min)*64;
+  let svg = [0,.5,1].map(t => {const value=min+(max-min)*t, yy=y(value);return `<line x1="43" y1="${yy}" x2="491" y2="${yy}" stroke="#e9eef2"/><text x="34" y="${yy+4}" text-anchor="end">${value.toFixed(field==='value_loss'?3:2)}</text>`;}).join('');
+  if (points.length > 1) svg += `<polyline points="${points.map((p,i)=>`${x(i)},${y(p[field])}`).join(' ')}" fill="none" stroke="${color}" stroke-width="2.3" stroke-linejoin="round"/>`;
+  const last = points.length-1;
+  svg += `<circle cx="${x(last)}" cy="${y(points[last][field])}" r="3.5" fill="${color}"/><text x="43" y="105">Iteration ${points[0].iteration}</text>`;
+  if(points.length>1) svg += `<text x="491" y="105" text-anchor="end">${points[last].iteration}</text>`;
+  $(id).innerHTML=svg;
+}
+function render(state) {
+  lastState=state;
+  const rows=state.metrics || [], latest=rows.at(-1) || {}, total=state.totals || latest;
+  const saved=state.saved_iteration ?? latest.iteration ?? 0;
+  $('runName').textContent=state.run_name;
+  $('saved').textContent=saved ? `Checkpoint saved at iteration ${saved}` : 'No checkpoint saved yet';
+  $('phase').textContent=phases[state.phase] || state.phase;
+  const live=state.active && state.phase==='selfplay';
+  $('boardStatus').classList.toggle('active',live);
+  $('boardDot').classList.toggle('live',live);
+  $('boardLabel').textContent=live?'Live self-play':state.selected?'Last recorded position':'Waiting for a game';
+  $('sessionTitle').textContent=state.active?`Iteration ${state.iteration || saved+1}${state.target_iteration?' of '+state.target_iteration:''}`:'Continue learning';
+  $('sessionDescription').textContent=state.active ? (state.phase==='learning'?'Learning from search decisions and completed game results.':state.phase==='saving'?'Saving the model, optimizer and replay buffer.':'The network is playing both sides and exploring possible moves.') : state.phase==='error'?'Training stopped with an error. Your last checkpoint is preserved.':'Resume the saved model and watch it play itself.';
+  $('start').disabled=state.active || busy;
+  $('iterations').disabled=state.active || busy;
+  $('start').textContent=state.active?'Training in progress':state.checkpoint_exists?'Resume training':'Start training';
+  $('stop').disabled=!state.locked || !['selfplay','learning','saving'].includes(state.phase) || state.stop_requested || busy;
+  $('stop').textContent=state.stop_requested?'Stopping after checkpoint…':'Stop after this iteration';
+  $('notice').textContent=state.error && state.phase==='error'?state.error:state.stale?'No fresh training update for over 30 seconds. Check the training process or its log.':'';
+  $('games').textContent=number(total.games);
+  $('positions').textContent=number(total.positions);
+  $('updates').textContent=number(total.updates);
+  const config=state.config || {};
+  $('device').textContent=state.device==='cuda'?'NVIDIA GPU (CUDA)':state.device==='cpu'?'CPU':'Auto-detected at start';
+  $('simulations').textContent=number(config.simulations);
+  $('parallel').textContent=number(config.parallel_games);
+  $('parameters').textContent=number(state.parameters);
+  let percent=0,label='Ready when you are';
+  if(state.phase==='selfplay') {percent=100*(state.ply||0)/(config.max_plies||512);label=`Half-move ${state.ply||0} / ${config.max_plies||512} limit`;}
+  if(state.phase==='learning') {percent=100*(state.train_step||0)/(config.train_steps||1);label=`Update ${state.train_step||0} / ${config.train_steps||0}`;}
+  if(['completed','saving'].includes(state.phase)){percent=100;label=state.phase==='completed'?'Checkpoint saved. Ready to continue.':'Saving this iteration…';}
+  if(['starting','initializing'].includes(state.phase))label='Preparing the model…';
+  if(state.phase==='stopped')label='Resume from the saved checkpoint.';
+  $('progressFill').style.width=Math.min(100,percent)+'%';
+  $('progress').setAttribute('aria-valuenow',Math.round(Math.min(100,percent)));
+  $('progressLabel').textContent=label;
+  const seconds=state.active && state.started_at?Math.max(0,Math.floor(Date.now()/1000-state.started_at)):latest.seconds;
+  $('elapsed').textContent=seconds==null?'—':`${Math.floor(seconds/60)}m ${Math.floor(seconds%60)}s`;
+  const options=(state.boards||[]).map(board=>board.id);
+  if(options.join(',')!==gameKey){gameKey=options.join(',');$('game').replaceChildren(...(options.length?options:[1]).map(id=>new Option(`Game ${id}`,id)));}
+  if(state.selected){selectedGame=state.selected.id;$('game').value=selectedGame;}
+  const key=(state.selected?.fen||'initial')+':'+flipped+':'+selectedGame;
+  if(key!==boardKey){boardKey=key;$('board').innerHTML=state.board_svg;}
+  const board=state.selected;
+  if(board){
+    const turn=board.fen.split(' ')[1]==='w'?'White':'Black';
+    $('turn').textContent=board.result==='*'?`${turn} to move`:board.result==='1/2-1/2'?'Game drawn':board.result==='1-0'?'White wins':'Black wins';
+    $('gameDetail').textContent=`Game ${board.id} · ${board.ply} half-moves${board.result==='*'&&board.ply>=config.max_plies?' · Move limit reached':''}`;
+    $('lastMove').textContent=board.last_san||'—';
+    $('board').setAttribute('aria-label',`Game ${board.id}. ${$('turn').textContent}. Last move ${board.last_san||'none'}.`);
+  }
+  const outcomes=[latest.white_wins||0,latest.black_wins||0,latest.draws||0,latest.truncated||0], sum=outcomes.reduce((a,b)=>a+b,0);
+  ['whiteWins','blackWins','draws','truncated'].forEach((id,i)=>$(id).textContent=outcomes[i]);
+  ['whiteBar','blackBar','drawBar','truncatedBar'].forEach((id,i)=>$(id).style.width=(sum?100*outcomes[i]/sum:0)+'%');
+  $('outcomeIteration').textContent=latest.iteration?`Iteration ${latest.iteration}`:'No saved games yet';
+  $('policyLoss').textContent=latest.policy_loss?.toFixed(3)??'—';
+  $('valueLoss').textContent=latest.value_loss?.toFixed(4)??'—';
+  chart('policyChart',rows,'policy_loss','#326f9b');chart('valueChart',rows,'value_loss','#4e8e75');
+  $('chartNote').textContent=rows.length===1?'One iteration saved. The next checkpoint will begin the trend.':rows.length?`${rows.length} saved iterations shown. Games reaching the move limit do not receive outcome targets.`:'History appears after the first saved iteration.';
+}
+async function refresh(){
+  if(requesting)return;
+  requesting=true;
+  const requestedGame=selectedGame, requestedFlip=flipped;
+  try{
+    const response=await fetch(`/api/state?game=${requestedGame}&flipped=${requestedFlip?1:0}`,{cache:'no-store'});
+    if(!response.ok)throw new Error('Dashboard unavailable');
+    const state=await response.json();
+    if(requestedGame!==selectedGame || requestedFlip!==flipped)return;
+    render(state);
+    $('connection').textContent='Connected to your computer';$('connectionDot').className='dot live';
+  }catch(error){$('connection').textContent='Disconnected — retrying';$('connectionDot').className='dot error';$('notice').textContent='The dashboard is disconnected. Start it again with .\\chess.ps1 dashboard. Training may still be running.';}
+  finally{requesting=false;}
+}
+async function action(path,body){
+  busy=true;$('message').textContent='';$('message').className='message';if(lastState)render(lastState);
+  try{const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const result=await response.json();if(!response.ok)throw new Error(result.error||'Request failed');$('message').textContent=path.endsWith('stop')?'Training will stop after this iteration is saved.':'Training is starting. The board will update automatically.';}
+  catch(error){$('message').textContent=error.message;$('message').className='message error';}
+  finally{busy=false;await refresh();}
+}
+$('start').addEventListener('click',()=>{if($('iterations').reportValidity())action('/api/start',{iterations:Number($('iterations').value)});});
+$('stop').addEventListener('click',()=>action('/api/stop',{}));
+$('game').addEventListener('change',()=>{selectedGame=Number($('game').value);refresh();});
+$('flip').addEventListener('click',()=>{flipped=!flipped;refresh();});
+refresh();setInterval(refresh,1000);
+</script>
+</body>
+</html>
