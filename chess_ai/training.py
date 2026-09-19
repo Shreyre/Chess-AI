@@ -2,6 +2,7 @@
 
 from collections import deque
 import json
+import math
 from pathlib import Path
 import time
 import uuid
@@ -20,7 +21,25 @@ from .telemetry import LiveStatus
 DEFAULTS = dict(games=16, parallel_games=8, simulations=64, max_plies=512,
                 temperature_plies=30, replay_size=20000, batch_size=128,
                 train_steps=100, learning_rate=0.001, channels=64, blocks=3,
-                seed=7, save_every=25)
+                seed=7, save_every=25, opening_plies=0, teacher_fraction=0.25,
+                teacher_refresh_every=0, gate_every=0)
+
+
+def update_replay(replay, records, rng):
+    """Keep old experience and sample across the whole incoming batch, not its tail."""
+    if not records:
+        return
+    keep = min(len(replay), max(replay.maxlen // 2, replay.maxlen - len(records)))
+    old = list(replay)
+    retained = [old[i] for i in rng.choice(len(old), keep, replace=False)] if keep else []
+    count = min(len(records), replay.maxlen - keep)
+    retained.extend(records[i] for i in rng.choice(len(records), count, replace=False))
+    replay.clear()
+    replay.extend(retained)
+
+
+def learning_steps(config, positions, teacher_slots=0):
+    return max(config["train_steps"], math.ceil(positions / (config["batch_size"] - teacher_slots)))
 
 
 def save_screen_game(directory, board, searches, result=None):
@@ -54,6 +73,12 @@ def self_play(model, config, rng, progress=print, live=None):
     for offset in range(0, config["games"], config["parallel_games"]):
         count = min(config["parallel_games"], config["games"] - offset)
         boards = [chess.Board() for _ in range(count)]
+        for board in boards:
+            for _ in range(config.get("opening_plies", 0)):
+                if board.is_game_over():
+                    break
+                moves = list(board.legal_moves)
+                board.push(moves[int(rng.integers(len(moves)))])
         histories = [[] for _ in boards]
         if live:
             live.boards(boards, offset, 0, force=True)
@@ -143,7 +168,7 @@ def restore_training(path, device, overrides):
     model, data = load_model(path, device)
     if "optimizer" not in data or "replay" not in data:
         raise ValueError("This is an inference model. Resume from latest.pt instead.")
-    config = data["config"] | overrides
+    config = DEFAULTS | data["config"] | overrides
     if any(config[key] != model.config[key] for key in ("channels", "blocks")):
         raise ValueError("Cannot change network dimensions when resuming")
     if config["seed"] != data["config"]["seed"]:
@@ -163,9 +188,17 @@ def restore_training(path, device, overrides):
 
 def train(args, device):
     external_only = getattr(args, "external_only", False)
+    teacher_only = getattr(args, "teacher_only", False)
+    if teacher_only and external_only:
+        raise ValueError("Choose teacher-only or external-only, not both")
     if external_only and not args.resume:
         raise ValueError("Screen-game learning needs --resume with a full latest.pt checkpoint")
-    overrides = {key: getattr(args, key) for key in DEFAULTS if getattr(args, key) is not None}
+    overrides = {key: getattr(args, key) for key in DEFAULTS if getattr(args, key, None) is not None}
+    if getattr(args, "teacher_data", None):
+        overrides["teacher_data"] = str(Path(args.teacher_data).resolve())
+    for name in ("teacher_engine", "teacher_fens"):
+        if getattr(args, name, None):
+            overrides[name] = str(Path(getattr(args, name)).resolve())
     directory = Path(args.run_dir or (Path(args.resume).parent if args.resume else "runs/main")).resolve()
     directory.mkdir(parents=True, exist_ok=True)
     latest = directory / "latest.pt"
@@ -203,6 +236,25 @@ def train(args, device):
             atomic_save(model_snapshot(model), directory / "initial.pt")
             atomic_save(model_snapshot(model), directory / "model.pt")
             save_training(latest, model, optimizer, replay, 0, config, rng, totals, {})
+        def maintain():
+            if external_only or teacher_only or not (config["teacher_refresh_every"] or config["gate_every"]):
+                return
+            from .maintenance import maintenance
+            maintenance(model, directory, config, iteration, live)
+            save_training(latest, model, optimizer, replay, iteration, config, rng,
+                          totals, data.get("metrics", {}) if args.resume else {}, screen_games)
+        from .teacher import load_teacher
+        live.update(force=True, iteration=iteration, saved_iteration=iteration,
+                    target_iteration=iteration + args.iterations, config=config, totals=totals)
+        maintain()
+        teacher_records = []
+        if config.get("teacher_data") and not external_only:
+            teacher_records = load_teacher(config["teacher_data"])["records"]
+        if teacher_only and not teacher_records:
+            raise ValueError("Teacher-only training requires --teacher-data")
+        teacher_slots = (min(config["batch_size"] - 1,
+                             round(config["batch_size"] * config["teacher_fraction"]))
+                         if teacher_records else 0)
         print(f"Device: {device}; network: {model.config}; "
               f"parameters: {sum(p.numel() for p in model.parameters()):,}", flush=True)
         print(f"Run: {directory}\nStarting at iteration {iteration}; Ctrl+C keeps the last completed iteration.", flush=True)
@@ -210,18 +262,24 @@ def train(args, device):
                     target_iteration=iteration + args.iterations, config=config, totals=totals,
                     parameters=sum(p.numel() for p in model.parameters()))
         for _ in range(args.iterations):
+            if stop_request.exists():
+                break
+            if config.get("teacher_data") and not external_only:
+                teacher_records = load_teacher(config["teacher_data"])["records"]
+                teacher_slots = min(config["batch_size"] - 1,
+                                    round(config["batch_size"] * config["teacher_fraction"]))
             started = time.monotonic()
             model.eval()
-            print(f"Iteration {iteration + 1}: {'screen-game learning' if external_only else 'self-play'}", flush=True)
-            live.update(force=True, phase="learning" if external_only else "selfplay", iteration=iteration + 1,
+            print(f"Iteration {iteration + 1}: {'teacher learning' if teacher_only else 'screen-game learning' if external_only else 'self-play'}", flush=True)
+            live.update(force=True, phase="learning" if external_only or teacher_only else "selfplay", iteration=iteration + 1,
                         started_at=time.time(), train_step=0)
-            if external_only:
+            if external_only or teacher_only:
                 records, pgns = [], []
                 outcomes = dict(white_wins=0, black_wins=0, draws=0, truncated=0)
             else:
                 records, outcomes, pgns = self_play(model, config, rng, live=live)
             imported, external_records = [], []
-            for path in sorted((directory / "screen-games").glob("*.pt")):
+            for path in ([] if teacher_only else sorted((directory / "screen-games").glob("*.pt"))):
                 if path.name in screen_games:
                     continue
                 game = torch.load(path, map_location="cpu", weights_only=True)
@@ -235,29 +293,37 @@ def train(args, device):
                 live.update(force=True, phase="completed", iteration=iteration, target_iteration=iteration)
                 return
             records.extend(external_records)
-            replay.extend(records)
+            update_replay(replay, records, rng)
             losses = []
             model.train()
             # Convert once: random indexing into a deque is linear.
             population = list(replay)
-            steps = min(10, config["train_steps"]) if external_only else config["train_steps"]
+            steps = (min(10, config["train_steps"]) if external_only else config["train_steps"]
+                     if teacher_only else learning_steps(config, len(records), teacher_slots))
             live.update(force=True, phase="learning", outcomes=outcomes, replay_positions=len(replay),
-                        config=config | {"train_steps": steps}, screen_games=len(imported))
+                        config=config | {"train_steps": steps}, screen_games=len(imported),
+                        teacher_positions=len(teacher_records), teacher_only=teacher_only)
             for step in range(steps):
-                fresh = min(len(external_records), max(1, config["batch_size"] // 4)) if step < 10 else 0
-                count = config["batch_size"] - fresh
+                taught = config["batch_size"] if teacher_only else teacher_slots
+                fresh = (min(len(external_records), config["batch_size"] - taught,
+                             max(1, config["batch_size"] // 4)) if step < 10 else 0)
+                count = config["batch_size"] - fresh - taught
                 indices = rng.choice(len(population), count, replace=len(population) < count)
                 samples = [population[i] for i in indices]
+                if taught:
+                    samples.extend(teacher_records[i] for i in rng.choice(
+                        len(teacher_records), taught, replace=len(teacher_records) < taught))
                 if fresh:
                     samples.extend(external_records[i] for i in rng.choice(len(external_records), fresh, replace=False))
                 losses.append(train_batch(model, optimizer, samples))
                 live.update(phase="learning", train_step=step + 1, loss=losses[-1])
             iteration += 1
-            totals = {"games": totals["games"] + (0 if external_only else config["games"]) + len(imported),
+            totals = {"games": totals["games"] + (0 if external_only or teacher_only else config["games"]) + len(imported),
                       "positions": totals["positions"] + len(records),
                       "updates": totals["updates"] + steps}
             metrics = dict(iteration=iteration, **totals, **outcomes, replay_positions=len(replay),
                            screen_games=len(imported),
+                           teacher_positions=len(teacher_records), teacher_only=teacher_only,
                            value_positions=sum(row[4] for row in records),
                            seconds=round(time.monotonic() - started, 2),
                            **{key: float(np.mean([loss[key] for loss in losses])) for key in losses[0]})
@@ -273,6 +339,13 @@ def train(args, device):
             if pgns:
                 with (directory / "selfplay.pgn").open("a", encoding="utf-8") as output:
                     output.write("\n\n".join(pgns) + "\n\n")
+            live.update(force=True, saved_iteration=iteration)
+            if (not external_only and not teacher_only and not stop_request.exists()
+                    and (config["teacher_refresh_every"] or config["gate_every"])):
+                from .maintenance import maintenance
+                maintenance(model, directory, config, iteration, live)
+                save_training(latest, model, optimizer, replay, iteration, config, rng,
+                              totals, metrics, screen_games)
             print(json.dumps(metrics), flush=True)
             print(f"Saved {latest}", flush=True)
             live.update(force=True, saved_iteration=iteration, totals=totals, metrics=metrics)

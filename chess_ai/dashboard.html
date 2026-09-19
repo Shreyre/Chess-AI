@@ -65,13 +65,13 @@ function render(state) {
   const saved=state.saved_iteration ?? latest.iteration ?? 0;
   $('runName').textContent=state.run_name;
   $('saved').textContent=saved ? `Checkpoint saved at iteration ${saved}` : 'No checkpoint saved yet';
-  $('phase').textContent=phases[state.phase] || state.phase;
+  $('phase').textContent=state.maintenance || phases[state.phase] || state.phase;
   const live=state.active && state.phase==='selfplay';
   $('boardStatus').classList.toggle('active',live);
   $('boardDot').classList.toggle('live',live);
   $('boardLabel').textContent=live?'Live self-play':state.selected?'Last recorded position':'Waiting for a game';
   $('sessionTitle').textContent=state.active?`Iteration ${state.iteration || saved+1}${state.target_iteration?' of '+state.target_iteration:''}`:'Continue learning';
-  $('sessionDescription').textContent=state.active ? (state.phase==='learning'?'Learning from search decisions and completed game results.':state.phase==='saving'?'Saving the model, optimizer and replay buffer.':'The network is playing both sides and exploring possible moves.') : state.phase==='error'?'Training stopped with an error. Your last checkpoint is preserved.':'Resume the saved model and watch it play itself.';
+  $('sessionDescription').textContent=state.maintenance ? `${state.maintenance}: ${state.maintenance_progress || 0}` : state.active ? (state.phase==='learning'?'Learning from search decisions and completed game results.':state.phase==='saving'?'Saving the model, optimizer and replay buffer.':'The network is playing both sides and exploring possible moves.') : state.phase==='error'?'Training stopped with an error. Your last checkpoint is preserved.':'Resume the saved model and watch it play itself.';
   $('start').disabled=state.active || busy;
   $('iterations').disabled=state.active || busy;
   $('start').textContent=state.active?'Training in progress':state.checkpoint_exists?'Resume training':'Start training';

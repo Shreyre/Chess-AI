@@ -2,8 +2,9 @@
 
 A local chess AI that starts with random neural-network weights and learns by
 playing itself. It uses **AlphaZero-style reinforcement learning**: a policy/value
-network plus Monte Carlo Tree Search (MCTS). No pretrained model, engine teacher,
-human games, opening book, or hand-written piece-value reward is used.
+network plus Monte Carlo Tree Search (MCTS). Pure self-play starts without a
+pretrained model or hand-written piece-value reward. Optional **hybrid training**
+adds offline Stockfish-labelled examples; the trained network still plays on its own.
 
 Built for this computer's **NVIDIA RTX 4060 Laptop GPU (8 GB VRAM)**. CPU mode also
 works. The screen player can also learn from completed games in your chosen
@@ -63,6 +64,55 @@ are also retained. Use another run folder for a new model.
 Eight concurrent games batch neural inference on the GPU; `--threads 2` limits
 PyTorch CPU threads. `--device auto` chooses CUDA when available.
 
+### Hybrid training: teacher examples plus self-play
+
+Use an official [Stockfish release](https://github.com/official-stockfish/Stockfish/releases)
+as an offline teacher. No additional Python package is needed. Keep downloaded
+engine binaries and generated datasets under `runs/` (ignored by Git).
+
+```powershell
+# Sample up to 1,024 games and add tactical/endgame practice positions.
+.\chess.ps1 teach --engine runs/tools/stockfish-19/stockfish/stockfish-windows-x86-64-universal.exe --pgn runs/main/selfplay.pgn --fens docs/practice-positions.fen --samples 1024 --nodes 20000 --output runs/teacher-v1.pt
+
+# Stop the active trainer after its checkpoint before resuming with new settings.
+# Short teacher-only warmup; the existing network, optimizer and replay survive.
+.\chess.ps1 train --resume runs/main/latest.pt --teacher-data runs/teacher-v1.pt --teacher-only --iterations 1 --train-steps 200 --learning-rate 0.0003
+
+# Keep 500 concurrent games; mix 25% teacher examples with self-play batches.
+.\chess.ps1 train --resume runs/main/latest.pt --iterations 20 --games 500 --parallel-games 500 --simulations 64 --opening-plies 4 --train-steps 100 --teacher-fraction 0.25
+
+# Held-out move agreement; run on both old and new checkpoints at the same budget.
+.\chess.ps1 assess --checkpoint runs/main/model.pt --teacher-data runs/teacher-v1.pt --simulations 64 --output runs/teacher-assessment.json
+# Paired openings with colors swapped; use an even game count.
+.\chess.ps1 evaluate --checkpoint runs/main/model.pt --opponent runs/hybrid-baseline/model.pt --games 20 --simulations 64 --opening-plies 4 --output runs/hybrid-match.json
+```
+
+Teacher labels include all legal moves, a policy over the teacher's top three,
+and a win/draw/loss-based value from the side-to-move perspective. Roughly 10% of
+distinct position groups are held out; reflected and color-swapped equivalents
+stay in the same partition. Teacher targets are approximate engine analysis,
+not guaranteed optimal moves. Generation refuses to overwrite an existing dataset.
+
+The replay buffer now samples from the **entire incoming batch**, retaining up to
+half its capacity for old experience when a large batch arrives. It no longer
+keeps only the last games. `--train-steps` is a minimum for self-play: updates scale
+to the number of new positions and the space left after teacher examples. For
+50,000 new positions, batch size 128 and a 25% teacher mix, this means at least
+521 updates. Teacher-only and screen-only learning keep their bounded step counts.
+
+`--opening-plies 4` adds four random legal opening half-moves before searched
+self-play; these exploratory moves are not used as policy targets. There is no
+penalty for correct defensive repetition. Teacher-only updates increase the
+iteration/update counters but do not fabricate played games.
+
+The teacher dataset path, fraction and opening settings persist in checkpoints,
+including dashboard resumes. Screen-game learning preserves these settings but
+does not mix teacher examples into its short update. Set `--teacher-fraction 0`
+to stop mixing teacher examples. Regenerate a new dataset from newer games as the
+model changes and pass its path with `--teacher-data`; datasets are not refreshed
+automatically. The starter dataset is small, so held-out checks and longer matches
+matter more than low training loss. A short match is not an Elo measurement.
+
 ### Training files
 
 | File in the run folder | Purpose |
@@ -113,6 +163,20 @@ cd /d "C:\Users\patel\OneDrive\Documents\Chess AI" && screen-player.cmd
 You can also launch `.venv/Scripts/chess-ai-screen.exe`. This is a separate
 Windows window; the dashboard is not required.
 
+**Continue after restarting:** the screen player saves its calibration, move
+history, pending move, and learning targets when you stop or close it. On reopening,
+click **Reposition board…**, select the current board, then **Start / resume**.
+It verifies the visible position before enabling play; saved window coordinates
+are not reused. The local save is `runs/screen-session.pt`.
+
+**Join an existing game without a save:** click **Continue current game…**, paste
+the full current FEN, then select the board precisely. This bypasses starting-board
+grid alignment and calibrates the pieces currently visible. FEN supplies the turn,
+castling rights, en passant, and move counters that a screenshot cannot determine.
+Earlier repetition history and learning targets are unavailable. A previously
+unseen piece type (for example, a later promotion) may need manual handling;
+calibrating at the starting position provides templates for every piece.
+
 1. Open a **new game in the standard starting position** in your app or browser.
 2. In the controller, choose the AI's side and which color is at the bottom.
 3. Click **Select board area**, then drag precisely around the 64 squares.
@@ -136,7 +200,7 @@ on ambiguous readings, unconfirmed clicks, or unexpected positions. It never
 automatically re-clicks an unconfirmed move. If a click was missed, clear any
 selected piece and press **Start / resume**: it checks whether the move already
 happened, and allows one new attempt only if the board is still unchanged.
-Promotions still require you to play the move and choose the piece yourself.
+Promotions automatically select the model's chosen piece from a recognized menu.
 CPU inference uses the selected saved model.
 
 Small central move dots are ignored. After Undo, the player can return to an exact
@@ -194,8 +258,12 @@ Learning updates the weights; it does not guarantee stronger play after every ga
 - **Vision tolerance** adjusts how much graphics variation is accepted. Start at
   0.18; a larger value can accept worse matches, so prefer a clear board and precise
   selection. **Click delay** gives the app time between source/destination clicks.
-- **Promotions pause before clicking.** Play the shown move, select the requested
-  piece in the app, then resume. Promotion menus differ between applications.
+- **Promotions are automatic** for menus with four square-sized piece choices
+  along the destination file, extending inward from the promotion square (as on
+  Chess.com). All four choices must match the calibrated pieces; menu order and
+  board orientation can vary. Unrecognized menus pause: select the requested
+  piece manually, then resume. Turn off the game's automatic queen promotion
+  to let the model choose a rook, bishop, or knight.
 - If F8 is pressed between the two clicks, clear the selected piece in the game
   before resuming. The controller only sends input while the original target
   window is in front and the click points still belong to it.

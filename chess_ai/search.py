@@ -45,11 +45,16 @@ def backup(path, value):
 class Search:
     def __init__(self, board, c_puct=1.5):
         self.board = board.copy(stack=True)
+        self._working_board = self.board.copy(stack=True)
         self.root = Node()
         self.c_puct = c_puct
 
     def leaf(self):
-        board, node = self.board.copy(stack=True), self.root
+        # Rewind the previous branch instead of copying the entire game each simulation.
+        # The returned board is valid until the next leaf() call on this search.
+        board, node = self._working_board, self.root
+        while len(board.move_stack) > len(self.board.move_stack):
+            board.pop()
         path = [node]
         while node.children:
             scale = self.c_puct * math.sqrt(node.visits + 1)

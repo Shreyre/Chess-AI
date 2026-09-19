@@ -18,13 +18,15 @@ except ImportError:
 from chess_ai.screen_vision import BoardArea, GameTracker, PieceReader, UncertainBoard, align_board_area, board_labels, matching_move, screen_square
 
 
-def render(board, white_bottom=True, assets=None, highlighted=()):
+def render(board, white_bottom=True, assets=None, highlighted=(), plain_background=None):
     image = Image.new("RGB", (512, 512))
     draw = ImageDraw.Draw(image)
     for row in range(8):
         for col in range(8):
             square = screen_square(row, col, white_bottom)
             background = (235, 237, 210) if (row+col) % 2 == 0 else (116, 149, 82)
+            if plain_background is not None:
+                background = plain_background
             if square in highlighted:
                 background = (246, 246, 105) if (row+col) % 2 == 0 else (186, 202, 68)
             x, y = col*64, row*64
@@ -181,8 +183,141 @@ class ScreenChecks(unittest.TestCase):
         self.assertEqual(tracker.pending.uci(), "g1f3")
         tracker.board = chess.Board("7k/P7/8/8/8/8/8/4K3 w - - 0 1")
         tracker.pending = chess.Move.from_uci("a7a8n")
-        self.assertEqual(tracker.observe(board_labels(tracker.board), retry_pending=True), "pending")
-        self.assertEqual(tracker.pending.uci(), "a7a8n")
+        self.assertEqual(tracker.observe(board_labels(tracker.board), retry_pending=True), "retry")
+        self.assertIsNone(tracker.pending)
+
+    def test_automatic_promotion_menu_and_confirmation(self):
+        import numpy as np
+        from chess_ai.screen_player import ScreenPlayer
+        assets = Path(__file__).resolve().parents[1] / "runs/screen-validation"
+        assets = assets if (assets / "wp.png").exists() else None
+        for white_bottom in (True, False):
+            for color in (chess.WHITE, chess.BLACK):
+                for piece in (chess.QUEEN, chess.ROOK, chess.BISHOP, chess.KNIGHT):
+                    with self.subTest(white_bottom=white_bottom, color=color, piece=piece):
+                        player = ScreenPlayer.__new__(ScreenPlayer)
+                        player.tracker = GameTracker(color)
+                        # Capture promotions exercise the destination file, not the pawn's file.
+                        board = chess.Board("1r5k/P7/8/8/8/8/7p/1R2K3 w - - 0 1")
+                        if not color:
+                            board = board.mirror()
+                        move = chess.Move(chess.A7 if color else chess.A2,
+                                          chess.B8 if color else chess.B1, promotion=piece)
+                        self.assertIn(move, board.legal_moves)
+                        player.tracker.board = board
+                        player.searches = {}
+                        player.stop_signal = threading.Event()
+                        player.messages = queue.Queue()
+                        player.area = BoardArea(-700, 100, -188, 612)
+                        player.target = 17
+                        player.reader = PieceReader(render(chess.Board(), white_bottom, assets), white_bottom)
+                        menu = board.copy()
+                        menu.remove_piece_at(move.from_square)
+                        choices = {}
+                        for offset, option in enumerate((chess.QUEEN, chess.KNIGHT, chess.ROOK, chess.BISHOP)):
+                            square = move.to_square + (-8 if color else 8) * offset
+                            menu.set_piece_at(square, chess.Piece(option, color))
+                            choices[option] = square
+                        background = (255, 255, 255) if assets else (220, 220, 220)
+                        menu_image = render(menu, white_bottom, assets, plain_background=background)
+                        self.assertEqual(player.reader.promotion_square(menu_image, move, color), choices[piece])
+                        self.assertIsNone(player.reader.promotion_square(render(board, white_bottom, assets), move, color))
+                        after = board.copy()
+                        after.push(move)
+                        clicks = []
+                        frames = [render(board, white_bottom, assets), menu_image,
+                                  render(after, white_bottom, assets, highlighted=(move.from_square, move.to_square))]
+
+                        def capture(**_):
+                            return frames[0 if len(clicks) < 2 else 1 if len(clicks) == 2 else 2]
+
+                        player.windows = SimpleNamespace(
+                            stopped=lambda _: player.stop_signal.is_set() or bool(player.tracker.board.move_stack),
+                            foreground=lambda: 17, park_pointer=lambda *_: None, window_at=lambda _: 17,
+                            click=lambda point, *_: clicks.append(point))
+                        search = SimpleNamespace(policy=lambda _: ([move], np.array([1.0], dtype=np.float32)))
+                        with patch.object(ScreenPlayer, "refresh_model", return_value=None), \
+                                patch("chess_ai.screen_player.select_move", return_value=(move, search)), \
+                                patch("chess_ai.screen_player.ImageGrab.grab", side_effect=capture), \
+                                patch.object(player.stop_signal, "wait", return_value=False):
+                            player.play_loop(Path("unused.pt"), 1, 0.2)
+                        self.assertEqual(clicks, [player.area.center(square, white_bottom) for square in
+                                                 (move.from_square, move.to_square, choices[piece])])
+                        self.assertEqual(player.tracker.board.fen(), after.fen())
+                        self.assertIsNone(player.tracker.pending)
+
+    def test_reported_promotion_menu_with_saved_calibration(self):
+        import numpy as np
+        fixtures = Path(__file__).parent / "fixtures"
+        reader = PieceReader.__new__(PieceReader)
+        with np.load(fixtures / "promotion-calibration.npz") as saved:
+            reader.templates = dict(saved)
+        reader.symbols = tuple(reader.templates)
+        reader.white_bottom, reader.tolerance = True, 0.18
+        with Image.open(fixtures / "promotion-menu.png") as image:
+            for piece, square in (("q", chess.G8), ("n", chess.G7),
+                                  ("r", chess.G6), ("b", chess.G5)):
+                move = chess.Move.from_uci("g7g8" + piece)
+                self.assertEqual(reader.promotion_square(image, move, chess.WHITE), square)
+            # Menu tolerance must not weaken normal board recognition.
+            with self.assertRaises(UncertainBoard):
+                reader.read(image)
+            obscured = image.copy()
+            ImageDraw.Draw(obscured).rectangle((555, 278, 647, 369), fill="purple")
+            self.assertIsNone(reader.promotion_square(obscured, move, chess.WHITE))
+
+    def test_pending_promotion_resumes_safely(self):
+        from chess_ai.screen_player import ScreenPlayer
+        for scenario in ("menu", "ignored", "unrecognized", "stopped", "fast_reply", "autoqueen"):
+            with self.subTest(scenario=scenario):
+                player = ScreenPlayer.__new__(ScreenPlayer)
+                player.tracker = GameTracker(chess.WHITE)
+                board = chess.Board("7k/P7/8/8/8/8/8/4K3 w - - 0 1")
+                move = chess.Move.from_uci("a7a8n")
+                player.tracker.board = board
+                player.tracker.pending = move
+                player.searches = {}
+                player.stop_signal = threading.Event()
+                player.messages = queue.Queue()
+                player.area = BoardArea(0, 0, 512, 512)
+                player.target = 17
+                player.reader = PieceReader(render(chess.Board()))
+                menu = board.copy()
+                menu.remove_piece_at(chess.A7)
+                for square, kind in zip((chess.A8, chess.A7, chess.A6, chess.A5),
+                                        (chess.QUEEN, chess.KNIGHT, chess.ROOK, chess.BISHOP)):
+                    menu.set_piece_at(square, chess.Piece(kind, chess.WHITE))
+                menu_image = render(menu, plain_background=(220, 220, 220))
+                if scenario == "unrecognized":
+                    menu_image = Image.new("RGB", (512, 512), "purple")
+                after = board.copy()
+                after.push_uci("a7a8q" if scenario == "autoqueen" else "a7a8n")
+                if scenario == "fast_reply":
+                    after.push_uci("h8g8")
+                clicks = []
+
+                def click(point, *_):
+                    if scenario == "stopped":
+                        raise InterruptedError("Stopped with F8")
+                    clicks.append(point)
+
+                def capture(**_):
+                    return render(after) if scenario in ("fast_reply", "autoqueen") or (
+                        clicks and scenario == "menu") else menu_image
+
+                player.windows = SimpleNamespace(
+                    stopped=lambda _: player.stop_signal.is_set() or bool(player.tracker.board.move_stack),
+                    foreground=lambda: 17, park_pointer=lambda *_: None, click=click)
+                with patch.object(ScreenPlayer, "refresh_model", return_value=None), \
+                        patch("chess_ai.screen_player.select_move") as choose, \
+                        patch("chess_ai.screen_player.ImageGrab.grab", side_effect=capture), \
+                        patch("chess_ai.screen_player.time.monotonic", side_effect=range(1, 100)), \
+                        patch.object(player.stop_signal, "wait", return_value=False):
+                    player.play_loop(Path("unused.pt"), 1, 0.2)
+                choose.assert_not_called()
+                self.assertEqual(clicks, [(32, 96)] if scenario in ("menu", "ignored") else [])
+                self.assertEqual(player.tracker.board.fen(), after.fen() if scenario in ("menu", "fast_reply") else board.fen())
+                self.assertEqual(player.tracker.pending, None if scenario in ("menu", "fast_reply") else move)
 
     def test_resume_retries_missed_clicks_once_then_pauses(self):
         import numpy as np
@@ -272,6 +407,7 @@ class ScreenChecks(unittest.TestCase):
             latest = selected.with_name("latest.pt")
             atomic_save(model_snapshot(model, 10), selected)
             atomic_save(model_snapshot(model, 11), latest)
+            atomic_save(model_snapshot(model, 9), selected.with_name("best.pt"))
             first = player.refresh_model(selected)
             self.assertEqual(player.messages.get_nowait(), ("model", 11))
             self.assertIs(player.refresh_model(selected), first)
@@ -388,6 +524,70 @@ class ScreenChecks(unittest.TestCase):
         with self.assertRaises(InterruptedError):
             windows.click((-100, 100), 17, stop)
         self.assertFalse(events)
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows UI layout check")
+    def test_current_game_import_and_session_restore(self):
+        import tkinter as tk
+        import torch
+        from chess_ai.screen_player import ScreenPlayer
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "session.pt"
+                player = ScreenPlayer(root, Path("runs/main/model.pt"), path)
+                board = chess.Board("NN6/8/8/1k6/6b1/8/8/K7 w - - 1 110")
+                with patch("chess_ai.screen_player.simpledialog.askstring", return_value=board.fen()), \
+                        patch.object(player, "select_area") as select:
+                    player.continue_game()
+                    self.assertEqual(select.call_args.kwargs["position"].fen(), board.fen())
+                for text in (None, "bad fen", board.board_fen()):
+                    with patch("chess_ai.screen_player.simpledialog.askstring", return_value=text), \
+                            patch.object(player, "select_area") as select:
+                        player.continue_game()
+                        select.assert_not_called()
+                player.windows = SimpleNamespace(window_at=lambda _: 17)
+                player.attach_position(render(board), BoardArea(0, 0, 512, 512), board)
+                player.set_running(False)
+                self.assertTrue(player.start_button.instate(["!disabled"]))
+                self.assertEqual(player.reader.read(render(board)), board_labels(board))
+                # Save history, an unconfirmed move, and learning targets across restart.
+                for token in ("a8c7", "b5c5"):
+                    player.tracker.board.push_uci(token)
+                player.tracker.pending = chess.Move.from_uci("b8a6")
+                player.searches = {0: ("a8c7", torch.tensor([0]), torch.tensor([1.0]))}
+                player.game_checkpoint = Path("runs/main/model.pt").resolve()
+                player.save_session()
+                saved = player.tracker.board.copy(stack=True)
+                restored = ScreenPlayer(root, Path("unused.pt"), path)
+                self.assertEqual(restored.tracker.board.fen(), saved.fen())
+                self.assertEqual(restored.tracker.board.move_stack, saved.move_stack)
+                self.assertEqual(restored.tracker.board.root().fen(), board.fen())
+                self.assertEqual(restored.tracker.pending.uci(), "b8a6")
+                self.assertEqual(restored.searches[0][0], "a8c7")
+                self.assertEqual(restored.game_checkpoint, player.game_checkpoint)
+                self.assertTrue(restored.start_button.instate(["disabled"]))
+                self.assertTrue(restored.reposition_button.instate(["!disabled"]))
+                self.assertIsNone(restored.target)
+                restored.windows = SimpleNamespace(window_at=lambda _: 17)
+                restored.reposition_board(render(saved), BoardArea(100, 100, 612, 612))
+                restored.set_running(False)
+                self.assertTrue(restored.start_button.instate(["!disabled"]))
+                after = saved.copy()
+                after.push(restored.tracker.pending)
+                restored.reposition_board(render(after), BoardArea(100, 100, 612, 612))
+                self.assertIsNone(restored.tracker.pending)
+                self.assertEqual(restored.tracker.board.fen(), after.fen())
+                # Failed imports leave the existing game available.
+                with self.assertRaises(ValueError):
+                    restored.attach_position(render(board), restored.area, chess.Board.empty())
+                self.assertEqual(restored.tracker.board.fen(), after.fen())
+                path.write_bytes(b"broken session")
+                broken = ScreenPlayer(root, Path("unused.pt"), path)
+                self.assertIsNone(broken.reader)
+                self.assertIn("Could not restore", broken.status.get())
+        finally:
+            root.destroy()
 
     @unittest.skipUnless(sys.platform == "win32", "Windows UI layout check")
     def test_native_controller_builds_without_input(self):

@@ -6,8 +6,6 @@ from pathlib import Path
 import sys
 
 import chess
-import chess.pgn
-import numpy as np
 import torch
 
 from .model import choose_device, load_model
@@ -34,6 +32,13 @@ def learning_rate(value):
     number = float(value)
     if not 0 < number <= 1:
         raise argparse.ArgumentTypeError("must be in (0, 1]")
+    return number
+
+
+def fraction(value):
+    number = float(value)
+    if not 0 <= number < 1:
+        raise argparse.ArgumentTypeError("must be in [0, 1)")
     return number
 
 
@@ -72,49 +77,10 @@ def play(args, model):
 
 def evaluate(args, model, device):
     opponent = load_model(args.opponent, device)[0] if args.opponent != "random" else None
-    rng = np.random.default_rng(args.seed)
-    counts = {"wins": 0, "losses": 0, "draws": 0, "truncated": 0}
-    pgns, opening = [], []
-    for index in range(args.games):
-        board = chess.Board()
-        if index % 2 == 0:
-            opening = []
-            for _ in range(args.opening_plies):
-                if board.is_game_over():
-                    break
-                move = list(board.legal_moves)[int(rng.integers(board.legal_moves.count()))]
-                opening.append(move)
-                board.push(move)
-        else:
-            for move in opening:
-                board.push(move)
-        color = chess.WHITE if index % 2 == 0 else chess.BLACK
-        for _ in range(args.max_plies):
-            if board.is_game_over():
-                break
-            current = model if board.turn == color else opponent
-            if current is None:
-                moves = list(board.legal_moves)
-                move = moves[int(rng.integers(len(moves)))]
-            else:
-                move, _ = select_move(current, board, args.simulations)
-            board.push(move)
-        outcome = board.outcome()
-        result = ("truncated" if outcome is None else "draws" if outcome.winner is None
-                  else "wins" if outcome.winner == color else "losses")
-        counts[result] += 1
-        print(f"Game {index + 1}/{args.games}: {result} ({len(board.move_stack)} plies)", flush=True)
-        game = chess.pgn.Game.from_board(board)
-        game.headers["White"] = str(args.checkpoint if color else args.opponent)
-        game.headers["Black"] = str(args.opponent if color else args.checkpoint)
-        if outcome is None:
-            game.headers["Termination"] = "move limit"
-        pgns.append(str(game))
-    completed = args.games - counts["truncated"]
-    report = dict(**counts, completed=completed,
-                  score_on_completed=(counts["wins"] + counts["draws"] / 2) / completed if completed else None,
-                  opponent=args.opponent, seed=args.seed, simulations=args.simulations,
-                  opening_plies=args.opening_plies)
+    from .evaluation import play_match
+    report, pgns = play_match(model, opponent, args.games, args.simulations,
+                             args.max_plies, args.opening_plies, args.seed)
+    report["opponent"] = args.opponent
     print(json.dumps(report, indent=2))
     if args.output:
         path = Path(args.output)
@@ -134,11 +100,24 @@ def main():
     trainer.add_argument("--run-dir", help="Output directory (default: runs/main or resume file's folder)")
     trainer.add_argument("--resume", help="Resume a full latest.pt checkpoint")
     trainer.add_argument("--external-only", action="store_true", help="Learn from pending completed screen games, without new self-play")
+    trainer.add_argument("--teacher-data", type=Path, help="Offline teacher dataset; saved for subsequent resumes")
+    trainer.add_argument("--teacher-only", action="store_true", help="Warm up on teacher examples without generating self-play")
+    trainer.add_argument("--teacher-engine", type=Path)
+    trainer.add_argument("--teacher-fens", type=Path)
     for name, default in DEFAULTS.items():
-        kind = learning_rate if name == "learning_rate" else nonnegative if name in ("seed", "temperature_plies") else positive
+        kind = (fraction if name == "teacher_fraction" else learning_rate if name == "learning_rate"
+                else nonnegative if name in ("seed", "temperature_plies", "opening_plies", "teacher_refresh_every", "gate_every") else positive)
         trainer.add_argument("--" + name.replace("_", "-"), type=kind,
                              help=f"Default for new runs: {default}; otherwise keep checkpoint setting")
-    for command in ("play", "analyze", "evaluate", "uci"):
+    teacher = sub.add_parser("teach", help="Generate offline training targets with a UCI Stockfish engine")
+    teacher.add_argument("--engine", required=True, help="Path to the Stockfish executable")
+    teacher.add_argument("--pgn", type=Path, help="Sample one position per selected game")
+    teacher.add_argument("--fens", type=Path, help="Additional practice FENs, one per line")
+    teacher.add_argument("--samples", type=positive, default=1024)
+    teacher.add_argument("--nodes", type=positive, default=20000)
+    teacher.add_argument("--seed", type=nonnegative, default=7)
+    teacher.add_argument("--output", type=Path, required=True)
+    for command in ("play", "analyze", "evaluate", "uci", "assess"):
         child = sub.add_parser(command)
         child.add_argument("--checkpoint", required=True, help="Saved .pt model or training checkpoint")
         child.add_argument("--simulations", type=positive, default=128)
@@ -146,6 +125,9 @@ def main():
             child.add_argument("--fen", default=chess.STARTING_FEN)
         if command == "play":
             child.add_argument("--color", choices=("white", "black"), default="white")
+        if command == "assess":
+            child.add_argument("--teacher-data", type=Path, required=True)
+            child.add_argument("--output", type=Path)
         if command == "evaluate":
             child.add_argument("--opponent", default="random", help="random or another checkpoint path")
             child.add_argument("--games", type=positive, default=20)
@@ -164,6 +146,10 @@ def main():
             serve(args.run_dir, args.port)
             return
         torch.set_num_threads(args.threads)
+        if args.command == "teach":
+            from .teacher import generate
+            generate(args)
+            return
         device = choose_device(args.device)
         if args.command == "train":
             train(args, device)
@@ -175,6 +161,9 @@ def main():
                 play(args, model)
             elif args.command == "evaluate":
                 evaluate(args, model, device)
+            elif args.command == "assess":
+                from .teacher import assess
+                assess(args, model)
             else:
                 board = valid_board(args.fen)
                 move, search = select_move(model, board, args.simulations)

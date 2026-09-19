@@ -9,13 +9,13 @@ import sys
 import threading
 import time
 import tkinter as tk
-from tkinter import filedialog, ttk
+from tkinter import filedialog, simpledialog, ttk
 
 import chess
 from PIL import ImageGrab, ImageTk
 import torch
 
-from .model import load_model, move_index
+from .model import atomic_save, load_model, move_index
 from .screen_vision import BoardArea, GameTracker, PieceReader, UncertainBoard, align_board_area, board_labels
 from .search import select_move
 from .training import save_screen_game
@@ -23,8 +23,9 @@ from .windows_input import WindowsInput, enable_dpi_awareness
 
 
 class ScreenPlayer:
-    def __init__(self, root, checkpoint):
+    def __init__(self, root, checkpoint, session_path=None):
         self.root = root
+        self.session_path = Path(session_path) if session_path is not None else None
         self.windows = WindowsInput()
         self.area = self.reader = self.tracker = None
         self.target = None
@@ -84,9 +85,11 @@ class ScreenPlayer:
             box.bind("<<ComboboxSelected>>", lambda _: self.clear_calibration())
         self.select_button = ttk.Button(panel, text="Select board area…", command=self.select_area)
         self.select_button.pack(fill="x", pady=(12, 5))
+        self.continue_button = ttk.Button(panel, text="Continue current game…", command=self.continue_game)
+        self.continue_button.pack(fill="x", pady=(0, 5))
         self.reposition_button = ttk.Button(panel, text="Reposition board…", command=lambda: self.select_area(True), state="disabled")
         self.reposition_button.pack(fill="x", pady=(0, 5))
-        ttk.Label(panel, text="Select a new game at its starting position. Use Reposition board to keep the current game.", wraplength=420).pack(anchor="w")
+        ttk.Label(panel, text="New game: Select board area. Existing game: Continue current game. Restored game: Reposition board.", wraplength=420).pack(anchor="w")
         self.preview = ttk.Label(panel, text="Your selected board will appear here", anchor="center")
         self.preview.pack(fill="both", expand=True, pady=12)
         ttk.Label(panel, textvariable=self.position, wraplength=420).pack(anchor="w")
@@ -135,7 +138,93 @@ class ScreenPlayer:
                   wraplength=420).pack(anchor="w")
         ttk.Label(panel, text="F8 stops from any window. Keep the board visible and in place.", wraplength=420).pack(anchor="w", pady=(10, 0))
         self.root.protocol("WM_DELETE_WINDOW", self.close)
+        self.restore_session()
         self.root.after(100, self.poll)
+
+    def save_session(self):
+        if self.session_path is None or self.reader is None or self.tracker is None:
+            return
+        atomic_save(dict(
+            root_fen=self.tracker.board.root().fen(),
+            moves=[move.uci() for move in self.tracker.board.move_stack],
+            pending=self.tracker.pending.uci() if self.tracker.pending else None,
+            color=self.tracker.color, white_bottom=self.reader.white_bottom,
+            tolerance=self.reader.tolerance,
+            templates={symbol: torch.from_numpy(rows) for symbol, rows in self.reader.templates.items()},
+            searches=self.searches, game_saved=self.game_saved,
+            checkpoint=str(self.game_checkpoint) if self.game_checkpoint else None,
+            model_path=self.model_path.get(), learn=self.learn.get()), self.session_path)
+
+    def restore_session(self):
+        if self.session_path is None or not self.session_path.exists():
+            return
+        try:
+            data = torch.load(self.session_path, map_location="cpu", weights_only=True)
+            board = chess.Board(data["root_fen"])
+            if not board.is_valid():
+                raise ValueError("Invalid saved position")
+            for token in data["moves"]:
+                board.push_uci(token)
+            reader = PieceReader.__new__(PieceReader)
+            reader.white_bottom, reader.tolerance = data["white_bottom"], data["tolerance"]
+            if not 0.08 <= reader.tolerance <= 0.3 or "." not in data["templates"]:
+                raise ValueError("Invalid saved calibration")
+            reader.templates = {}
+            for symbol, rows in data["templates"].items():
+                if (symbol not in ".PNBRQKpnbrqk" or len(symbol) != 1 or rows.ndim != 2
+                        or rows.shape[1] != 6400 or not 1 <= rows.shape[0] <= 64 or not torch.isfinite(rows).all()):
+                    raise ValueError("Invalid saved piece template")
+                reader.templates[symbol] = rows.numpy()
+            reader.symbols = tuple(reader.templates)
+            tracker = GameTracker(data["color"])
+            tracker.board = board
+            tracker.pending = board.parse_uci(data["pending"]) if data["pending"] else None
+            checkpoint = Path(data["checkpoint"]) if data["checkpoint"] else None
+            self.reader, self.tracker = reader, tracker
+            self.searches, self.game_saved, self.game_checkpoint = data["searches"], data["game_saved"], checkpoint
+            self.model_path.set(data["model_path"])
+            self.color.set("White" if tracker.color else "Black")
+            self.orientation.set("White at bottom" if reader.white_bottom else "Black at bottom")
+            self.tolerance.set(reader.tolerance)
+            self.learn.set(data["learn"])
+            self.area = self.target = None
+            self.set_running(False)
+            self.position.set(f"Saved game at move {board.fullmove_number}")
+            self.status.set("Game restored. Click Reposition board, select the current board, then Start / resume.")
+        except Exception as error:
+            self.status.set(f"Could not restore the saved game: {error}")
+
+    def continue_game(self):
+        fen = simpledialog.askstring("Continue current game", "Paste the current position's FEN (including whose turn it is).",
+                                     parent=self.root, initialvalue=self.tracker.board.fen() if self.tracker else "")
+        if fen is None:
+            return
+        try:
+            if len(fen.split()) != 6:
+                raise ValueError("Paste the full FEN: pieces, turn, castling, en passant, halfmove count, and move number")
+            board = chess.Board(fen)
+            if not board.is_valid():
+                raise ValueError("FEN must describe a valid chess position")
+        except ValueError as error:
+            self.status.set(str(error))
+            return
+        self.select_area(position=board)
+
+    def attach_position(self, image, area, board):
+        if not board.is_valid():
+            raise ValueError("The position is not a valid chess board")
+        reader = PieceReader(image, self.orientation.get() == "White at bottom", self.tolerance.get(), board)
+        target = self.windows.window_at(area.center(chess.D4))
+        if not target:
+            raise ValueError("No application window was found under the board")
+        tracker = GameTracker(self.color.get() == "White")
+        tracker.board = board.copy(stack=True)
+        self.area, self.target, self.reader, self.tracker = area, target, reader, tracker
+        self.searches = {}
+        self.game_saved = False
+        self.game_checkpoint = None
+        self.result.set("Result…")
+        self.save_session()
 
     def clear_calibration(self):
         self.reader = self.tracker = None
@@ -149,9 +238,9 @@ class ScreenPlayer:
         if path:
             self.model_path.set(path)
 
-    def select_area(self, reposition=False):
+    def select_area(self, reposition=False, position=None):
         self.root.withdraw()
-        self.root.after(350, lambda: self.overlay(reposition))
+        self.root.after(350, lambda: self.overlay(reposition, position))
 
     def reposition_board(self, image, area):
         observed = self.reader.read(image)
@@ -165,7 +254,7 @@ class ScreenPlayer:
                          if ply < len(tracker.board.move_stack) or
                          (ply == len(tracker.board.move_stack) and tracker.pending is not None)}
 
-    def overlay(self, reposition=False):
+    def overlay(self, reposition=False, position=None):
         try:
             screenshot = ImageGrab.grab(all_screens=True, include_layered_windows=True)
             left, top, width, height = self.windows.desktop()
@@ -217,7 +306,7 @@ class ScreenPlayer:
             overlay.destroy()
             try:
                 selected = BoardArea(x1, y1, x2, y2)
-                if not reposition:
+                if not reposition and position is None:
                     selected = align_board_area(screenshot, selected)
                 area = BoardArea(left+selected.left, top+selected.top, left+selected.right, top+selected.bottom)
                 cropped = screenshot.crop(selected.bbox)
@@ -232,28 +321,12 @@ class ScreenPlayer:
                     self.status.set("Board repositioned. Start / resume continues this game.")
                     self.set_running(False)
                     return
-                reader = PieceReader(cropped, self.orientation.get() == "White at bottom", tolerance)
-                self.area, self.reader = area, reader
-                self.tracker = GameTracker(self.color.get() == "White")
-                self.searches = {}
-                self.game_saved = False
-                self.game_checkpoint = None
-                self.result.set("Result…")
-                self.finish_button.configure(state="disabled")
-                self.target = self.windows.window_at(area.center(chess.D4))
-                if not self.target:
-                    raise ValueError("No application window was found under the board")
+                self.attach_position(cropped, area, chess.Board() if position is None else position)
                 self.show_image(cropped)
-                self.position.set(f"Board: {area.right-area.left} × {area.bottom-area.top} pixels at ({area.left}, {area.top})")
-                self.status.set("Starting position calibrated. Keep this board visible, then press Start.")
-                self.start_button.configure(state="normal")
-                self.reposition_button.configure(state="normal")
+                self.position.set(f"Tracking move {self.tracker.board.fullmove_number}")
+                self.status.set("Board calibrated. Keep it visible, then press Start / resume.")
+                self.set_running(False)
             except (ValueError, OSError, tk.TclError) as error:
-                if not reposition:
-                    self.reader = self.tracker = None
-                    self.start_button.configure(state="disabled")
-                    self.reposition_button.configure(state="disabled")
-                    self.finish_button.configure(state="disabled")
                 self.status.set(f"Select again: {error}")
             finally:
                 self.root.deiconify()
@@ -272,18 +345,18 @@ class ScreenPlayer:
         self.preview.configure(image=self.preview.image, text="")
 
     def set_running(self, running):
-        for widget in (self.select_button, self.browse_button, self.model_entry, self.learn_button, *self.tuning):
+        for widget in (self.select_button, self.continue_button, self.browse_button, self.model_entry, self.learn_button, *self.tuning):
             widget.configure(state="disabled" if running else "normal")
         for widget in (self.color_box, self.orientation_box, self.result_box):
             widget.configure(state="disabled" if running else "readonly")
-        self.start_button.configure(state="disabled" if running or self.reader is None or self.game_saved else "normal")
+        self.start_button.configure(state="disabled" if running or self.reader is None or self.target is None or self.game_saved else "normal")
         self.reposition_button.configure(state="disabled" if running or self.reader is None or self.game_saved else "normal")
         self.stop_button.configure(state="normal" if running else "disabled")
         self.finish_button.configure(state="normal" if not running and self.tracker is not None and self.searches
                                      and not self.game_saved and self.learn.get() else "disabled")
 
     def start(self):
-        if self.reader is None or (self.worker and self.worker.is_alive()):
+        if self.reader is None or self.target is None or (self.worker and self.worker.is_alive()):
             return
         try:
             simulations, tolerance, delay = self.simulations.get(), self.tolerance.get(), self.delay.get()
@@ -292,7 +365,7 @@ class ScreenPlayer:
             checkpoint = Path(self.model_path.get()).resolve()
             if not checkpoint.is_file():
                 raise ValueError("Choose an existing trained .pt model")
-            if self.learn.get() and (checkpoint.name not in ("model.pt", "latest.pt") or
+            if self.learn.get() and (checkpoint.name not in ("model.pt", "latest.pt", "best.pt") or
                                     not (checkpoint.parent / "latest.pt").is_file()):
                 raise ValueError("For learning, choose the run's model.pt with its latest.pt beside it, or turn learning off")
             if self.searches and self.game_checkpoint and self.game_checkpoint.parent != checkpoint.parent:
@@ -314,7 +387,7 @@ class ScreenPlayer:
         if self.tracker is None or self.game_checkpoint is None:
             raise ValueError("Start and track a game before saving its result")
         directory = self.game_checkpoint.parent
-        if self.game_checkpoint.name not in ("model.pt", "latest.pt") or not (directory / "latest.pt").is_file():
+        if self.game_checkpoint.name not in ("model.pt", "latest.pt", "best.pt") or not (directory / "latest.pt").is_file():
             raise ValueError("Learning needs the run's model.pt and full latest.pt checkpoint")
         save_screen_game(directory, self.tracker.board, self.searches, result)
         self.game_saved = True
@@ -355,6 +428,7 @@ class ScreenPlayer:
             previous = None
             uncertain_since = None
             pending_since = time.monotonic() if self.tracker.pending else None
+            promotion_clicked = False
             resuming = True
             while not self.windows.stopped(self.stop_signal):
                 if self.windows.foreground() != self.target:
@@ -365,6 +439,23 @@ class ScreenPlayer:
                 try:
                     self.windows.park_pointer(self.area, self.target, self.stop_signal)
                     image = ImageGrab.grab(bbox=self.area.bbox, all_screens=True, include_layered_windows=True)
+                    pending = self.tracker.pending
+                    if pending and pending.promotion and not promotion_clicked:
+                        square = self.reader.promotion_square(image, pending, self.tracker.board.turn)
+                        if square is not None:
+                            menu = ("promotion", square)
+                            if previous == menu:
+                                self.windows.click(self.area.center(square, self.reader.white_bottom),
+                                                   self.target, self.stop_signal)
+                                promotion_clicked = True
+                                resuming = False
+                                pending_since = time.monotonic()
+                                self.messages.put(("status", f"Selected {chess.piece_name(pending.promotion)}. Waiting for confirmation…"))
+                                previous = None
+                            else:
+                                previous = menu
+                            self.stop_signal.wait(max(delay, 0.25))
+                            continue
                     observed = self.reader.read(image)
                     if observed != previous:
                         previous = observed
@@ -376,6 +467,7 @@ class ScreenPlayer:
                         self.searches = {ply: search for ply, search in self.searches.items()
                                          if ply < len(self.tracker.board.move_stack)}
                         pending_since = None
+                        promotion_clicked = False
                     uncertain_since = None
                 except UncertainBoard as error:
                     uncertain_since = uncertain_since or time.monotonic()
@@ -390,7 +482,7 @@ class ScreenPlayer:
                     if pending_since and time.monotonic() - pending_since > 6:
                         move = self.tracker.pending
                         if move.promotion:
-                            raise UncertainBoard(f"Play {move.uci()} and choose {chess.piece_name(move.promotion)}, then Start / resume.")
+                            raise UncertainBoard(f"Promotion {move.uci()} was not confirmed. Choose {chess.piece_name(move.promotion)} if the menu is open, or clear any selected piece, then Start / resume.")
                         raise UncertainBoard(f"Move {move.uci()} was not accepted. Clear any selected piece, then Start / resume to retry.")
                     self.messages.put(("status", "Waiting for the move to appear on the board…"))
                 elif board.is_game_over():
@@ -413,10 +505,6 @@ class ScreenPlayer:
                     moves, policy = search.policy(1)
                     self.searches[len(board.move_stack)] = (move.uci(),
                         torch.tensor([move_index(candidate, board.turn) for candidate in moves]), torch.from_numpy(policy))
-                    if move.promotion:
-                        self.tracker.pending = move
-                        self.messages.put(("status", f"Promotion: play {move.uci()} and choose {chess.piece_name(move.promotion)} yourself, then Resume."))
-                        return
                     source = self.area.center(move.from_square, self.reader.white_bottom)
                     target = self.area.center(move.to_square, self.reader.white_bottom)
                     # Check both squares before the first click; no blind re-clicks after failure.
@@ -427,6 +515,7 @@ class ScreenPlayer:
                         raise InterruptedError("Stopped before the destination click; clear any selected piece before resuming")
                     self.windows.click(target, self.target, self.stop_signal)
                     self.tracker.pending = move
+                    promotion_clicked = False
                     pending_since = time.monotonic()
                     self.messages.put(("status", f"Played {board.san(move)}. Waiting for confirmation…"))
                     previous = None
@@ -447,19 +536,23 @@ class ScreenPlayer:
                 if message[0] == "status":
                     self.status.set(message[1])
                 elif message[0] == "model":
-                    self.model_status.set(f"Using saved iteration {message[1]}")
+                    self.model_status.set(f"Using {'best-model' if self.model_stamp and self.model_stamp[0].name == 'best.pt' else 'saved'} iteration {message[1]}")
                 elif message[0] == "frame":
                     self.show_image(message[1])
                     self.position.set(f"Tracking move {chess.Board(message[2]).fullmove_number}")
                 elif message[0] == "done":
                     self.set_running(False)
+                    try:
+                        self.save_session()
+                    except OSError as error:
+                        self.status.set(f"Game stopped, but the session could not be saved: {error}")
                 elif message[0] == "learn":
                     self.learning_queue[message[1]] = None
                     self.learning_status.set("Game saved. Learning is queued; progress appears in the dashboard.")
         except queue.Empty:
             pass
         if self.learner is not None and self.learner.poll() is not None:
-            self.learning_status.set("Learning saved. The updated model loads before the next AI move." if self.learner.returncode == 0
+            self.learning_status.set("Learning saved. The latest model loads before the next AI move." if self.learner.returncode == 0
                                      else "Learning stopped with an error. Game data is saved; see screen-learning.log in the run folder.")
             self.learner = None
         if self.learner is None and self.learning_queue:
@@ -484,6 +577,11 @@ class ScreenPlayer:
             self.status.set("Stopping before closing…")
             self.root.after(100, self.close)
         else:
+            try:
+                self.save_session()
+            except OSError as error:
+                self.status.set(f"Cannot save this game yet: {error}. Keep this window open and retry closing.")
+                return
             self.root.destroy()
 
 
@@ -494,7 +592,7 @@ def main():
     args = parser.parse_args()
     enable_dpi_awareness()
     root = tk.Tk()
-    ScreenPlayer(root, args.checkpoint)
+    ScreenPlayer(root, args.checkpoint, Path(__file__).resolve().parents[1] / "runs/screen-session.pt")
     root.mainloop()
 
 

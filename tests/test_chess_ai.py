@@ -17,7 +17,7 @@ import numpy as np
 import torch
 
 from chess_ai.model import ACTION_SIZE, ChessNet, atomic_save, encode, evaluate_boards, model_snapshot, move_index
-from chess_ai.search import Node, backup, select_move, terminal_value
+from chess_ai.search import Node, Search, backup, select_move, terminal_value
 from chess_ai.training import DEFAULTS, restore_training, save_screen_game, save_training, self_play, train, train_batch
 from chess_ai.uci import parse_position, search_limits
 
@@ -94,6 +94,35 @@ class ChessChecks(unittest.TestCase):
         self.assertAlmostEqual(float(probabilities.sum()), 1, places=6)
         self.assertTrue(all(move in board.legal_moves for move in moves))
         self.assertTrue(-1 <= value <= 1)
+
+    def test_search_reuses_working_board_without_losing_history(self):
+        repeated = chess.Board()
+        for token in ["g1f3", "g8f6", "f3g1", "f6g8"] * 2:
+            repeated.push_uci(token)
+        boards = [repeated,
+                  chess.Board("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1"),
+                  chess.Board("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1"),
+                  chess.Board("7k/P7/8/8/8/8/8/4K3 w - - 0 1")]
+        for board in boards:
+            search = Search(board)
+            original = board.fen(), list(board.move_stack)
+            working_board = None
+            for move in list(board.legal_moves):
+                # Visit sibling branches, including castling, en passant and promotion.
+                search.root.children = {move: Node()}
+                leaf, node, path = search.leaf()
+                expected = board.copy()
+                expected.push(move)
+                self.assertEqual(leaf.fen(), expected.fen())
+                self.assertEqual(leaf.move_stack, expected.move_stack)
+                np.testing.assert_array_equal(encode(leaf), encode(expected))
+                self.assertEqual(terminal_value(leaf), terminal_value(expected))
+                self.assertEqual(path, [search.root, node])
+                if working_board is not None:
+                    self.assertIs(leaf, working_board)
+                working_board = leaf
+            self.assertEqual((board.fen(), board.move_stack), original)
+            self.assertEqual((search.board.fen(), search.board.move_stack), original)
 
     def test_learning_truncation_and_resume(self):
         rng = np.random.default_rng(17)
@@ -191,7 +220,8 @@ class ChessChecks(unittest.TestCase):
             args.external_only = False
             train(args, "cpu")
             resumed = torch.load(checkpoint, weights_only=True)
-            self.assertEqual(resumed["totals"], dict(games=4, positions=12, updates=4))
+            # Nine new positions need three four-position updates under scaled learning.
+            self.assertEqual(resumed["totals"], dict(games=4, positions=12, updates=5))
             self.assertEqual(set(resumed["screen_games"]), {game.name, second.name})
             self.assertEqual(resumed["metrics"]["screen_games"], 1)
             self.assertFalse((directory / ".training.lock").exists())

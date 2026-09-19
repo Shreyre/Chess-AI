@@ -113,29 +113,57 @@ class UncertainBoard(ValueError):
 
 
 class PieceReader:
-    def __init__(self, image, white_bottom=True, tolerance=0.18):
+    def __init__(self, image, white_bottom=True, tolerance=0.18, board=None):
         self.white_bottom = white_bottom
         self.tolerance = tolerance
-        expected = board_labels(chess.Board())
+        expected = board_labels(chess.Board() if board is None else board)
         self.symbols = tuple(".PNBRQKpnbrqk")
         templates = {symbol: [] for symbol in self.symbols}
         for square, features in image_tiles(image, white_bottom):
             templates[expected[square]].append(features)
-        self.templates = {symbol: np.stack(rows) for symbol, rows in templates.items()}
+        self.templates = {symbol: np.stack(rows) for symbol, rows in templates.items() if rows}
+        self.symbols = tuple(self.templates)
         if self.read(image) != expected:
-            raise ValueError("Calibration needs the standard starting position and a clear, flat 2D board")
+            raise ValueError("The selected board must match the supplied position and use clear, flat 2D pieces")
 
     def read(self, image):
         labels = ["."] * 64
         for square, features in image_tiles(image, self.white_bottom):
-            distances = np.array([np.min(np.mean((self.templates[symbol] - features) ** 2, axis=1)) ** 0.5
-                                  for symbol in self.symbols])
-            order = distances.argsort()
-            best, second = distances[order[0]], distances[order[1]]
-            if best > self.tolerance or second - best < 0.015:
-                raise UncertainBoard(f"Cannot confidently read {chess.square_name(square)}")
-            labels[square] = self.symbols[order[0]]
+            labels[square] = self.read_piece(square, features)
         return tuple(labels)
+
+    def read_piece(self, square, features, symbols=None, tolerance=None):
+        tolerance = self.tolerance if tolerance is None else tolerance
+        symbols = self.symbols if symbols is None else tuple(s for s in symbols if s in self.templates)
+        distances = np.array([np.min(np.mean((self.templates[symbol] - features) ** 2, axis=1)) ** 0.5
+                              for symbol in symbols])
+        order = distances.argsort()
+        best, second = distances[order[0]], distances[order[1]]
+        if best > tolerance or second - best < 0.015:
+            raise UncertainBoard(f"Cannot confidently read {chess.square_name(square)}")
+        return symbols[order[0]]
+
+    def promotion_square(self, image, move, color):
+        # ponytail: recognize four square-sized choices down the destination file;
+        # add a menu-specific detector if another app uses a different layout.
+        squares = {move.to_square + (-8 if color else 8) * offset for offset in range(4)}
+        choices = {}
+        # The menu belongs to the promoting side; its background can otherwise
+        # make the two queen colors ambiguous against their board templates.
+        symbols = ".PNBRQK" if color else ".pnbrqk"
+        try:
+            for square, features in image_tiles(image, self.white_bottom):
+                if square in squares:
+                    # White menu backgrounds change antialiased edges: the reported
+                    # menu scores 0.20–0.23 against board templates. Require all four
+                    # distinct choices below, while leaving board tolerance unchanged.
+                    choices[self.read_piece(square, features, symbols,
+                                            tolerance=max(self.tolerance, 0.25))] = square
+        except UncertainBoard:
+            return None
+        if set(choices) == set("QRBN" if color else "qrbn"):
+            return choices[chess.Piece(move.promotion, color).symbol()]
+        return None
 
 
 def matching_move(board, observed):
@@ -173,7 +201,7 @@ class GameTracker:
                 return "reply"
             if board_labels(self.board) == observed:
                 # Only an explicit resume can retry an unchanged, verified board.
-                if retry_pending and not self.pending.promotion:
+                if retry_pending:
                     self.pending = None
                     return "retry"
                 return "pending"
