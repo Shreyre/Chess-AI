@@ -210,10 +210,30 @@ class ScreenPlayer:
             return
         self.select_area(position=board)
 
-    def attach_position(self, image, area, board):
-        if not board.is_valid():
+    def attach_position(self, image, area, board=None):
+        if board is not None and not board.is_valid():
             raise ValueError("The position is not a valid chess board")
-        reader = PieceReader(image, self.orientation.get() == "White at bottom", self.tolerance.get(), board)
+        if board is None:
+            initial = chess.Board()
+            candidates = [initial]
+            # ponytail: infer only White's first move; later positions need an explicit FEN.
+            if self.color.get() == "Black":
+                for move in initial.legal_moves:
+                    after = initial.copy()
+                    after.push(move)
+                    candidates.append(after)
+            matches = []
+            for candidate in candidates:
+                try:
+                    reader = PieceReader(image, self.orientation.get() == "White at bottom", self.tolerance.get(), candidate)
+                except ValueError:
+                    continue
+                matches.append((reader, candidate))
+            if len(matches) != 1:
+                raise ValueError("Select the starting board (or White's first move when playing Black). For a later position, use Continue current game.")
+            reader, board = matches[0]
+        else:
+            reader = PieceReader(image, self.orientation.get() == "White at bottom", self.tolerance.get(), board)
         target = self.windows.window_at(area.center(chess.D4))
         if not target:
             raise ValueError("No application window was found under the board")
@@ -321,7 +341,7 @@ class ScreenPlayer:
                     self.status.set("Board repositioned. Start / resume continues this game.")
                     self.set_running(False)
                     return
-                self.attach_position(cropped, area, chess.Board() if position is None else position)
+                self.attach_position(cropped, area, position)
                 self.show_image(cropped)
                 self.position.set(f"Tracking move {self.tracker.board.fullmove_number}")
                 self.status.set("Board calibrated. Keep it visible, then press Start / resume.")

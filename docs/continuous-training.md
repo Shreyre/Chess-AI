@@ -32,3 +32,31 @@ Resume with `--teacher-refresh-every 5 --gate-every 5 --teacher-engine PATH --te
 The gate plays 20 games per available opponent at 64 searches per move, with paired openings and swapped colors. Promotion requires at least 60% against the incumbent and 50% against each of up to two older checkpoints, with no unfinished games. Results and PGNs are in `evaluations/`. This is a regression screen, not proof of strength or an Elo estimate. Both jobs run sequentially between saved iterations and add time to training.
 
 The screen player's normal `model.pt`/`latest.pt` selections follow the latest saved iteration, checking for updates before each AI move. Selection tests still maintain `best.pt`, which can be chosen explicitly. Historical checkpoint selections remain pinned. Completed screen games train the latest model, and saved updates reach normal play without waiting for selection. Restart an already-open screen player once to load this behavior.
+
+## Teaching upgrade
+
+The new teaching controls preserve existing network dimensions and checkpoints.
+`--priority-fraction 0.5` mixes uniform and error-based sampling; `--curriculum-every 1`
+unlocks easy, intermediate and advanced teacher examples over three saved learning
+iterations. `--postgame-nodes 20000` adds offline Stockfish corrections for completed
+screen games, including older unreviewed saves. `--teacher-capacity 20000` retains
+older examples across the smaller periodic refreshes, up to 20,000 total.
+
+The active-run handoff is `runs/activate-teaching.py`, with progress in
+`runs/main/teaching-upgrade-status.json`. It waits for the expanded dataset and the
+requested checkpoint stop, backs up the full checkpoint, enables the controls,
+runs three short curriculum iterations in a separate trial, reviews saved screen games, assesses
+held-out teacher agreement, and runs 20 paired games at 64 searches per move
+against a frozen pre-upgrade model. Trial weights replace the active model only
+with no truncated games, at least 60% match score, and no newer active checkpoint.
+It then resumes the remaining requested
+self-play iterations. Reports are saved as `teaching-*-assessment.json` and
+`teaching-comparison.json`; these are measurements, not an Elo estimate or a
+guarantee of stronger play. The handoff log records any failure without deleting
+the saved checkpoint or completed games.
+
+## Laptop tuning
+
+For the 16 GB RAM / RTX 4060 laptop, the queued configuration is 100 games per iteration, all 100 concurrent, with 64 searches per move and the existing 512-ply ceiling. Teacher refresh and candidate testing move from every five large iterations to every 25 smaller iterations, keeping roughly the same cadence per generated game. The one-time `runs/tune-laptop.py` handoff preserves the active iteration and computes the new iteration target from the remaining game budget (63,036 total games, allowing up to 99 extra games for rounding or screen-game imports). Its status is recorded in `runs/main/laptop-tuning-status.json`.
+
+Training now releases discarded batch records before generating the next batch, and drops the duplicate replay-list reference after restoring a checkpoint. A regression test verifies that only retained replay positions survive into the next self-play call. The CUDA opening-position microbenchmark is recorded in `runs/laptop-benchmark.log`; it diagnoses per-search overhead and does not predict full-iteration time.

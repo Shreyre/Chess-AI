@@ -105,15 +105,16 @@ def main():
     trainer.add_argument("--teacher-engine", type=Path)
     trainer.add_argument("--teacher-fens", type=Path)
     for name, default in DEFAULTS.items():
-        kind = (fraction if name == "teacher_fraction" else learning_rate if name == "learning_rate"
-                else nonnegative if name in ("seed", "temperature_plies", "opening_plies", "teacher_refresh_every", "gate_every") else positive)
+        kind = (fraction if name in ("teacher_fraction", "priority_fraction") else learning_rate if name == "learning_rate"
+                else nonnegative if name in ("seed", "temperature_plies", "opening_plies", "teacher_refresh_every", "gate_every", "curriculum_every", "postgame_nodes") else positive)
         trainer.add_argument("--" + name.replace("_", "-"), type=kind,
                              help=f"Default for new runs: {default}; otherwise keep checkpoint setting")
     teacher = sub.add_parser("teach", help="Generate offline training targets with a UCI Stockfish engine")
     teacher.add_argument("--engine", required=True, help="Path to the Stockfish executable")
-    teacher.add_argument("--pgn", type=Path, help="Sample one position per selected game")
+    teacher.add_argument("--pgn", type=Path, help="Sample openings, middlegames and endings from games")
     teacher.add_argument("--fens", type=Path, help="Additional practice FENs, one per line")
     teacher.add_argument("--samples", type=positive, default=1024)
+    teacher.add_argument("--max-records", type=positive, help="Maximum training examples, including retained older examples")
     teacher.add_argument("--nodes", type=positive, default=20000)
     teacher.add_argument("--seed", type=nonnegative, default=7)
     teacher.add_argument("--output", type=Path, required=True)

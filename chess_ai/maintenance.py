@@ -26,6 +26,7 @@ def maintenance(model, directory, config, iteration, live):
                          pgn=directory / "selfplay.pgn", fens=config.get("teacher_fens"),
                          samples=1024, recent_games=2000, nodes=20000,
                          seed=config["seed"] + iteration, output=output,
+                         max_records=config.get("teacher_capacity", 20000),
                          previous=config.get("teacher_data")), stop,
                          lambda n: progress("Refreshing teacher examples", n), model=model)
             load_teacher(output)

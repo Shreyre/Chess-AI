@@ -17,6 +17,27 @@ from chess_ai.teacher import teacher_record, load_teacher, position_group
 
 
 class HybridChecks(unittest.TestCase):
+    def test_previous_batch_is_released_before_next_selfplay(self):
+        import weakref
+        references = []
+        def games(*args, **kwargs):
+            if references:
+                self.assertLessEqual(sum(ref() is not None for ref in references), 1)
+            rows = []
+            for _ in range(3):
+                row = teacher_record(chess.Board(), [dict(pv=[chess.Move.from_uci('e2e4')],
+                    score=chess.engine.PovScore(chess.engine.Cp(0), True))])
+                references.append(weakref.ref(row[0]))
+                rows.append(row)
+            return rows, dict(white_wins=0, black_wins=0, draws=1, truncated=0), []
+        with tempfile.TemporaryDirectory() as folder:
+            options = dict.fromkeys(DEFAULTS)
+            options.update(channels=8, blocks=1, games=1, replay_size=1, batch_size=1,
+                           train_steps=1)
+            args = SimpleNamespace(**options, resume=None, run_dir=folder, iterations=2)
+            with patch('chess_ai.training.self_play', side_effect=games):
+                train(args, 'cpu')
+
     @classmethod
     def setUpClass(cls):
         torch.set_num_threads(1)

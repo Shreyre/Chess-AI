@@ -22,7 +22,18 @@ DEFAULTS = dict(games=16, parallel_games=8, simulations=64, max_plies=512,
                 temperature_plies=30, replay_size=20000, batch_size=128,
                 train_steps=100, learning_rate=0.001, channels=64, blocks=3,
                 seed=7, save_every=25, opening_plies=0, teacher_fraction=0.25,
-                teacher_refresh_every=0, gate_every=0)
+                teacher_refresh_every=0, gate_every=0, priority_fraction=0.0,
+                curriculum_every=0, postgame_nodes=0, teacher_capacity=20000)
+
+
+def priority_probabilities(errors, fraction):
+    errors = np.asarray(errors, dtype=np.float64)
+    if errors.ndim != 1 or not len(errors) or not np.isfinite(errors).all() or np.any(errors < 0):
+        raise ValueError("Priorities must be finite, nonnegative and nonempty")
+    if not 0 <= fraction < 1:
+        raise ValueError("Priority fraction must be in [0, 1)")
+    weights = np.sqrt(errors + 1e-6)
+    return (1 - fraction) / len(errors) + fraction * weights / weights.sum()
 
 
 def update_replay(replay, records, rng):
@@ -128,7 +139,7 @@ def self_play(model, config, rng, progress=print, live=None):
     return records, outcomes, games
 
 
-def train_batch(model, optimizer, samples):
+def train_batch(model, optimizer, samples, return_errors=False):
     """Sparse legal policy targets avoid storing 4672 floats per replay position."""
     device = next(model.parameters()).device
     states = torch.stack([row[0] for row in samples]).to(device, dtype=torch.float32)
@@ -141,7 +152,9 @@ def train_batch(model, optimizer, samples):
         indices[i, :length], targets[i, :length], legal[i, :length] = row[1], row[2], True
     logits, values = model(states)
     selected = logits.gather(1, indices.to(device)).masked_fill(~legal.to(device), -1e9)
-    policy_loss = -(targets.to(device) * F.log_softmax(selected, dim=1)).sum(1).mean()
+    log_probs = F.log_softmax(selected, dim=1)
+    policy_errors = -(targets.to(device) * log_probs).sum(1)
+    policy_loss = policy_errors.mean()
     value_targets = torch.tensor([row[3] for row in samples], device=device)
     known = torch.tensor([row[4] for row in samples], device=device)
     value_loss = F.mse_loss(values[known], value_targets[known]) if known.any() else values.sum() * 0
@@ -152,7 +165,13 @@ def train_batch(model, optimizer, samples):
     loss.backward()
     torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0, error_if_nonfinite=True)
     optimizer.step()
-    return {"loss": loss.item(), "policy_loss": policy_loss.item(), "value_loss": value_loss.item()}
+    metrics = {"loss": loss.item(), "policy_loss": policy_loss.item(), "value_loss": value_loss.item()}
+    if return_errors:
+        # KL divergence avoids prioritizing targets simply because they have high entropy.
+        entropy = -(targets.to(device) * targets.to(device).clamp_min(1e-9).log()).sum(1)
+        errors = (policy_errors - entropy).clamp_min(0) + (values - value_targets).square() * known
+        return metrics, errors.detach().cpu().numpy()
+    return metrics
 
 
 def save_training(path, model, optimizer, replay, iteration, config, rng, totals, metrics, screen_games=()):
@@ -224,6 +243,7 @@ def train(args, device):
             model, optimizer, replay, config, rng, data = restore_training(args.resume, device, overrides)
             iteration, totals = data["iteration"], data["totals"]
             screen_games = set(data.get("screen_games", []))
+            data.pop("replay", None)  # The restored deque owns these records now.
         else:
             config = DEFAULTS | overrides
             torch.manual_seed(config["seed"])
@@ -243,13 +263,18 @@ def train(args, device):
             maintenance(model, directory, config, iteration, live)
             save_training(latest, model, optimizer, replay, iteration, config, rng,
                           totals, data.get("metrics", {}) if args.resume else {}, screen_games)
-        from .teacher import load_teacher
+        from .teacher import load_teacher, curriculum_stage, correct_screen_game
+        if config["curriculum_every"]:
+            config.setdefault("curriculum_start", iteration)
+        if config["postgame_nodes"] and not config.get("teacher_engine"):
+            raise ValueError("Post-game corrections require --teacher-engine")
         live.update(force=True, iteration=iteration, saved_iteration=iteration,
                     target_iteration=iteration + args.iterations, config=config, totals=totals)
         maintain()
-        teacher_records = []
+        teacher_records, teacher_priorities = [], []
         if config.get("teacher_data") and not external_only:
-            teacher_records = load_teacher(config["teacher_data"])["records"]
+            teacher_data = load_teacher(config["teacher_data"])
+            teacher_records, teacher_priorities = (teacher_data[key] for key in ("records", "priorities"))
         if teacher_only and not teacher_records:
             raise ValueError("Teacher-only training requires --teacher-data")
         teacher_slots = (min(config["batch_size"] - 1,
@@ -265,7 +290,13 @@ def train(args, device):
             if stop_request.exists():
                 break
             if config.get("teacher_data") and not external_only:
-                teacher_records = load_teacher(config["teacher_data"])["records"]
+                teacher_data = load_teacher(config["teacher_data"])
+                stage = curriculum_stage(config, iteration)
+                eligible = [i for i, level in enumerate(teacher_data["levels"]) if level <= stage]
+                if not eligible:
+                    raise ValueError(f"Teacher dataset has no curriculum level {stage} examples")
+                teacher_records = [teacher_data["records"][i] for i in eligible]
+                teacher_priorities = [teacher_data["priorities"][i] for i in eligible]
                 teacher_slots = min(config["batch_size"] - 1,
                                     round(config["batch_size"] * config["teacher_fraction"]))
             started = time.monotonic()
@@ -278,26 +309,67 @@ def train(args, device):
                 outcomes = dict(white_wins=0, black_wins=0, draws=0, truncated=0)
             else:
                 records, outcomes, pgns = self_play(model, config, rng, live=live)
-            imported, external_records = [], []
+            imported, reviewed, external_records, corrections = [], [], [], 0
+            replacements = {}
             for path in ([] if teacher_only else sorted((directory / "screen-games").glob("*.pt"))):
-                if path.name in screen_games:
+                already_imported = path.name in screen_games
+                if already_imported and (not config["postgame_nodes"] or path.name in config.get("reviewed_screen_games", [])):
                     continue
                 game = torch.load(path, map_location="cpu", weights_only=True)
                 if game["result"] not in ("1-0", "0-1", "1/2-1/2") or not game["records"]:
                     raise ValueError(f"Invalid completed screen game: {path}")
-                external_records.extend(game["records"])
-                outcomes[{"1-0": "white_wins", "0-1": "black_wins", "1/2-1/2": "draws"}[game["result"]]] += 1
-                imported.append(path.name)
-            if external_only and not imported:
+                if config["postgame_nodes"]:
+                    import subprocess
+                    import sys
+                    import chess.engine
+                    cached = directory / "screen-corrections" / path.name
+                    if cached.exists():
+                        corrected = torch.load(cached, map_location="cpu", weights_only=True)
+                    else:
+                        live.update(force=True, phase="learning", maintenance=f"Reviewing {path.name}")
+                        flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+                        with chess.engine.SimpleEngine.popen_uci(config["teacher_engine"], creationflags=flags) as engine:
+                            engine.configure({"Threads": 1, "Hash": 64, "UCI_ShowWDL": True})
+                            rows, report = correct_screen_game(game, engine, config["postgame_nodes"])
+                        corrected = dict(records=rows, corrections=report, nodes=config["postgame_nodes"])
+                        atomic_save(corrected, cached)
+                    if already_imported:
+                        external_records.extend(corrected["records"][item["index"]] for item in corrected["corrections"])
+                    else:
+                        external_records.extend(corrected["records"])
+                    corrections += len(corrected["corrections"])
+                    for item in corrected["corrections"]:
+                        row = corrected["records"][item["index"]]
+                        replacements[row[0].numpy().tobytes()] = row
+                    reviewed.append(path.name)
+                    live.update(force=True, maintenance=None)
+                else:
+                    external_records.extend(game["records"])
+                if not already_imported:
+                    outcomes[{"1-0": "white_wins", "0-1": "black_wins", "1/2-1/2": "draws"}[game["result"]]] += 1
+                    imported.append(path.name)
+            config["reviewed_screen_games"] = sorted(set(config.get("reviewed_screen_games", [])) | set(reviewed))
+            if external_only and not external_records:
+                save_training(latest, model, optimizer, replay, iteration, config, rng, totals,
+                              data.get("metrics", {}), screen_games)
                 atomic_save(model_snapshot(model, iteration), directory / "model.pt")
                 live.update(force=True, phase="completed", iteration=iteration, target_iteration=iteration)
                 return
             records.extend(external_records)
+            if replacements:
+                # Replace old targets for the same encoded position, rather than teaching both moves.
+                replay = deque((replacements.get(row[0].numpy().tobytes(), row) for row in replay),
+                               maxlen=config["replay_size"])
+                records = [replacements.get(row[0].numpy().tobytes(), row) for row in records]
             update_replay(replay, records, rng)
             losses = []
             model.train()
             # Convert once: random indexing into a deque is linear.
             population = list(replay)
+            # ponytail: refresh priorities within each learning phase; persist them if longer-term ranking helps.
+            replay_priorities = np.ones(len(population))
+            teacher_priorities = np.asarray(teacher_priorities, dtype=np.float64)
+            priority_fraction = config["priority_fraction"]
             steps = (min(10, config["train_steps"]) if external_only else config["train_steps"]
                      if teacher_only else learning_steps(config, len(records), teacher_slots))
             live.update(force=True, phase="learning", outcomes=outcomes, replay_positions=len(replay),
@@ -308,14 +380,24 @@ def train(args, device):
                 fresh = (min(len(external_records), config["batch_size"] - taught,
                              max(1, config["batch_size"] // 4)) if step < 10 else 0)
                 count = config["batch_size"] - fresh - taught
-                indices = rng.choice(len(population), count, replace=len(population) < count)
+                indices = rng.choice(len(population), count, replace=bool(priority_fraction) or len(population) < count,
+                                     p=priority_probabilities(replay_priorities, priority_fraction) if priority_fraction and count else None)
                 samples = [population[i] for i in indices]
                 if taught:
-                    samples.extend(teacher_records[i] for i in rng.choice(
-                        len(teacher_records), taught, replace=len(teacher_records) < taught))
+                    teacher_indices = rng.choice(len(teacher_records), taught,
+                        replace=bool(priority_fraction) or len(teacher_records) < taught,
+                        p=priority_probabilities(teacher_priorities, priority_fraction) if priority_fraction else None)
+                    samples.extend(teacher_records[i] for i in teacher_indices)
                 if fresh:
                     samples.extend(external_records[i] for i in rng.choice(len(external_records), fresh, replace=False))
-                losses.append(train_batch(model, optimizer, samples))
+                if priority_fraction:
+                    metrics, errors = train_batch(model, optimizer, samples, return_errors=True)
+                    replay_priorities[indices] = errors[:count]
+                    if taught:
+                        teacher_priorities[teacher_indices] = errors[count:count + taught]
+                    losses.append(metrics)
+                else:
+                    losses.append(train_batch(model, optimizer, samples))
                 live.update(phase="learning", train_step=step + 1, loss=losses[-1])
             iteration += 1
             totals = {"games": totals["games"] + (0 if external_only or teacher_only else config["games"]) + len(imported),
@@ -324,6 +406,7 @@ def train(args, device):
             metrics = dict(iteration=iteration, **totals, **outcomes, replay_positions=len(replay),
                            screen_games=len(imported),
                            teacher_positions=len(teacher_records), teacher_only=teacher_only,
+                           corrected_positions=corrections, curriculum_stage=curriculum_stage(config, iteration - 1),
                            value_positions=sum(row[4] for row in records),
                            seconds=round(time.monotonic() - started, 2),
                            **{key: float(np.mean([loss[key] for loss in losses])) for key in losses[0]})
@@ -340,6 +423,8 @@ def train(args, device):
                 with (directory / "selfplay.pgn").open("a", encoding="utf-8") as output:
                     output.write("\n\n".join(pgns) + "\n\n")
             live.update(force=True, saved_iteration=iteration)
+            # Release discarded positions before maintenance and the next self-play batch.
+            del records, population, samples, external_records
             if (not external_only and not teacher_only and not stop_request.exists()
                     and (config["teacher_refresh_every"] or config["gate_every"])):
                 from .maintenance import maintenance

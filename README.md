@@ -71,7 +71,7 @@ as an offline teacher. No additional Python package is needed. Keep downloaded
 engine binaries and generated datasets under `runs/` (ignored by Git).
 
 ```powershell
-# Sample up to 1,024 games and add tactical/endgame practice positions.
+# Sample up to 1,024 positions across game phases and add practice positions.
 .\chess.ps1 teach --engine runs/tools/stockfish-19/stockfish/stockfish-windows-x86-64-universal.exe --pgn runs/main/selfplay.pgn --fens docs/practice-positions.fen --samples 1024 --nodes 20000 --output runs/teacher-v1.pt
 
 # Stop the active trainer after its checkpoint before resuming with new settings.
@@ -109,9 +109,53 @@ The teacher dataset path, fraction and opening settings persist in checkpoints,
 including dashboard resumes. Screen-game learning preserves these settings but
 does not mix teacher examples into its short update. Set `--teacher-fraction 0`
 to stop mixing teacher examples. Regenerate a new dataset from newer games as the
-model changes and pass its path with `--teacher-data`; datasets are not refreshed
-automatically. The starter dataset is small, so held-out checks and longer matches
+model changes and pass its path with `--teacher-data`, or enable automatic refresh
+with `--teacher-refresh-every`. The starter dataset is small, so held-out checks and longer matches
 matter more than low training loss. A short match is not an Elo measurement.
+
+### Smarter teaching
+
+The teacher generator samples opening, middlegame and endgame positions, with
+original tactical and endgame lessons in `docs/practice-positions.fen`.
+Each lesson can end with `# level=0`, `# level=1` or `# level=2`: immediate
+mates/captures, basic endings, then harder calculation. Untagged lessons are
+level 0; sampled game endings are level 1 and other sampled positions level 2.
+
+```powershell
+.\chess.ps1 teach --engine runs/tools/stockfish-19/stockfish/stockfish-windows-x86-64-universal.exe --pgn runs/main/selfplay.pgn --fens docs/practice-positions.fen --samples 30000 --max-records 20000 --nodes 20000 --output runs/teacher-expanded.pt
+.\chess.ps1 train --resume runs/main/latest.pt --teacher-data runs/teacher-expanded.pt --teacher-engine runs/tools/stockfish-19/stockfish/stockfish-windows-x86-64-universal.exe --priority-fraction 0.5 --curriculum-every 1 --postgame-nodes 20000 --teacher-capacity 20000 --teacher-only --iterations 3 --train-steps 200
+.\chess.ps1 train --resume runs/main/latest.pt --iterations 20
+```
+
+Stop an active trainer at its next checkpoint before resuming with changed
+settings. The curriculum starts at the saved activation iteration and unlocks
+one level every `--curriculum-every` learning iterations; earlier levels stay
+available. The example gives each level one teacher-only iteration, then keeps
+all levels available during normal hybrid learning. Zero disables the curriculum.
+
+With `--priority-fraction 0.5`, half of the sampling probability stays uniform
+and half follows the square root of prediction error. Both replay and teacher
+examples update their priorities as they are trained. This intentionally
+emphasizes difficult examples; it is not an unbiased importance-weighted PER
+implementation. Replay priorities reset each learning phase, while generated
+teacher difficulty supplies the initial teacher priorities. Zero restores
+uniform sampling. No extra dependency or different network is needed.
+
+`--postgame-nodes 20000` reviews confirmed AI decisions from completed screen
+games with Stockfish, including previously imported games not yet reviewed.
+Moves losing at least 100 centipawns against the teacher's best line receive
+teacher policy/value targets. Original game files remain untouched, review
+reports are saved in `screen-corrections/`, and checkpoint receipts prevent
+repeated imports or reviews. If the teacher fails, the game stays available for
+retry. Only completed saved games are reviewed, never live move selection.
+Zero disables reviews.
+
+Teacher refresh keeps up to `--teacher-capacity` examples, retaining older
+lessons alongside new ones. Teacher labels for held-out position groups are
+excluded from training and corrections. These positions can have appeared in
+self-play: held-out teacher agreement is a diagnostic, not an independent
+strength measurement. Compare paired matches at equal search budgets, and
+inspect `best.pt` selection reports before claiming an improvement.
 
 ### Training files
 

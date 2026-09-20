@@ -42,26 +42,26 @@ def board_labels(board):
 
 
 def align_board_area(image, area):
-    """Fit the starting board's empty middle ranks to correct small drag errors."""
+    """Fit square edges across the middle ranks, tolerating an opening move."""
     pixels = np.asarray(image.crop(area.bbox).convert("RGB"), dtype=np.float32)
-    height, width = pixels.shape[:2]
+    height = pixels.shape[0]
 
-    def edges(line, indices):
-        contrast = np.max(np.abs(np.diff(line, axis=0)), axis=1)
+    def edges(lines, indices):
+        # Vote across scanlines so a moved piece cannot replace a square edge.
+        contrast = np.median(np.max(np.abs(np.diff(lines, axis=0)), axis=2), axis=1)
         positions = []
         for index in indices:
-            start = round(len(line) * (index / 8 - 1 / 32))
-            end = round(len(line) * (index / 8 + 1 / 32))
+            start = round(len(lines) * (index / 8 - 1 / 32))
+            end = round(len(lines) * (index / 8 + 1 / 32))
             peak = start + int(np.argmax(contrast[start:end]))
             if contrast[peak] < 20:
                 raise ValueError("Cannot locate the square edges. Select the starting board again.")
             positions.append(peak + 1)
         return np.asarray(positions)
 
-    x, y = round(width * 7 / 16), round(height * 7 / 16)
     files, ranks = np.arange(1, 8), np.arange(3, 6)
-    vertical = edges(np.median(pixels[y-1:y+2], axis=0), files)
-    horizontal = edges(np.median(pixels[:, x-1:x+2], axis=1), ranks)
+    vertical = edges(pixels[height // 4:3 * height // 4].transpose(1, 0, 2), files)
+    horizontal = edges(pixels, ranks)
     size, left = np.polyfit(files, vertical, 1)
     top = np.median(horizontal - ranks * size)
     if (np.max(np.abs(vertical - (left + files * size))) > 2 or

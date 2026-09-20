@@ -49,6 +49,42 @@ def render(board, white_bottom=True, assets=None, highlighted=(), plain_backgrou
 
 
 class ScreenChecks(unittest.TestCase):
+    def test_black_bottom_opening_selection(self):
+        from chess_ai.screen_player import ScreenPlayer
+        player = ScreenPlayer.__new__(ScreenPlayer)
+        player.color = SimpleNamespace(get=lambda: "Black")
+        player.tolerance = SimpleNamespace(get=lambda: 0.18)
+        player.result = SimpleNamespace(set=lambda _: None)
+        player.windows = SimpleNamespace(window_at=lambda _: 17)
+        player.session_path = None
+        with Image.open(Path(__file__).parent / "fixtures/black-bottom-e4.png") as reported:
+            for white_bottom in (False, True):
+                player.orientation = SimpleNamespace(get=lambda: "White at bottom" if white_bottom else "Black at bottom")
+                for token in (None, "e2e4", "d2d4", "g1f3", "b1c3"):
+                    with self.subTest(white_bottom=white_bottom, move=token):
+                        board = chess.Board()
+                        if token:
+                            board.push_uci(token)
+                        image = reported.copy() if not white_bottom and token == "e2e4" else render(
+                            board, white_bottom, highlighted=() if token is None else
+                            (board.peek().from_square, board.peek().to_square))
+                        screen = Image.new("RGB", (image.width + 40, image.height + 40), (49, 46, 43))
+                        screen.paste(image, (20, 20))
+                        area = align_board_area(screen, BoardArea(19, 17, image.width + 20, image.height + 23))
+                        for actual, expected in zip(area.bbox, (20, 20, image.width + 20, image.height + 20)):
+                            self.assertLessEqual(abs(actual - expected), 1)
+                        player.attach_position(screen.crop(area.bbox), area)
+                        self.assertEqual(player.tracker.board.move_stack, board.move_stack)
+                        self.assertEqual(player.tracker.board.fen(), board.fen())
+                        self.assertEqual(player.reader.read(image), board_labels(board))
+                        self.assertEqual(player.tracker.color, chess.BLACK)
+                # A later game requires an explicit FEN; failed selection preserves the current game.
+                saved = player.tracker
+                board.push_uci("e7e5")
+                with self.assertRaises(ValueError):
+                    player.attach_position(render(board, white_bottom), BoardArea(0, 0, 512, 512))
+                self.assertIs(player.tracker, saved)
+
     def test_drag_alignment_before_recognition(self):
         for white_bottom in (True, False):
             board = chess.Board()

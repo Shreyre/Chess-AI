@@ -1,22 +1,77 @@
-# Original practice positions: mate threats, captures, promotion and basic endgames.
+# Curriculum: level=0 immediate mates/captures, level=1 endings/promotions,
+# level=2 calculation and defence. Earlier levels remain available after promotion.
 # The teacher generator also includes color-swapped and file-reflected versions.
-7k/5Q2/6K1/8/8/8/8/8 w - - 0 1
-6k1/5ppp/8/8/8/8/5PPP/4R1K1 w - - 0 1
-7k/6pp/5K2/8/8/8/8/R7 w - - 0 1
+7k/5Q2/6K1/8/8/8/8/8 w - - 0 1 # level=0 mate
+6k1/5ppp/8/8/8/8/5PPP/4R1K1 w - - 0 1 # level=0 back-rank mate
+7k/6pp/5K2/8/8/8/8/R7 w - - 0 1 # level=1 rook ending
 4k3/8/8/3q4/2P5/8/8/4K3 w - - 0 1
 4k3/8/8/3r4/2B5/8/8/4K3 w - - 0 1
 4k3/8/2q5/8/3N4/8/8/4K3 w - - 0 1
-6k1/5ppp/8/8/8/8/5PPP/R2r2K1 w - - 0 1
+6k1/5ppp/8/8/8/8/5PPP/R2r2K1 w - - 0 1 # level=2 defence
 4k3/8/8/8/3r4/8/3R4/4K3 w - - 0 1
 7k/P7/8/8/8/8/8/4K3 w - - 0 1
-1r5k/P7/8/8/8/8/8/4K3 w - - 0 1
-8/8/4k3/8/4K3/4P3/8/8 w - - 0 1
-8/8/8/4k3/8/4K3/4P3/8 w - - 0 1
-7k/8/5K2/8/8/8/8/R7 w - - 0 1
-7k/8/5K2/8/8/8/8/1Q6 w - - 0 1
-8/7k/5K2/6P1/8/8/8/8 w - - 0 1
-8/8/6k1/8/5KP1/8/8/8 w - - 0 1
-4k3/8/8/8/8/4K3/4P3/8 w - - 0 1
+1r5k/P7/8/8/8/8/8/4K3 w - - 0 1 # level=1 capture promotion
+8/8/4k3/8/4K3/4P3/8/8 w - - 0 1 # level=1 opposition
+8/8/8/4k3/8/4K3/4P3/8 w - - 0 1 # level=1 opposition
+7k/8/5K2/8/8/8/8/R7 w - - 0 1 # level=1 rook ending
+7k/8/5K2/8/8/8/8/1Q6 w - - 0 1 # level=1 queen ending
+8/7k/5K2/6P1/8/8/8/8 w - - 0 1 # level=1 pawn ending
+8/8/6k1/8/5KP1/8/8/8 w - - 0 1 # level=1 pawn ending
+4k3/8/8/8/8/4K3/4P3/8 w - - 0 1 # level=1 pawn ending
 7k/5Q2/5K2/8/8/8/8/8 w - - 0 1
-7k/6pp/8/8/2B5/8/5PPP/3Q2K1 w - - 0 1
+7k/6pp/8/8/2B5/8/5PPP/3Q2K1 w - - 0 1 # level=2 king attack
 4k3/8/8/8/3q4/2N5/8/4K3 w - - 0 1
+
+# Additional original practice positions.
+rnbqkbnr/pppp1ppp/8/4p3/6P1/5P2/PPPPP2P/RNBQKBNR b KQkq - 0 2 # level=0 mate in one
+r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4 # level=0 mate in one
+r1bqkbnr/pppp1ppp/8/4p3/2BnP3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4 # level=2 avoid the opening trap
+r1bqk2r/pppp1ppp/2n2n2/2b1p3/2BPP3/2P2N2/PP3PPP/RNBQK2R b KQkq - 0 5 # level=2 central calculation
+rnbqk2r/ppp1bppp/4pn2/3p2B1/2PP4/2N5/PP2PPPP/R2QKBNR w KQkq - 4 5 # level=2 pinned knight and development
+rnbqkb1r/pp2pppp/3p1n2/8/3NP3/2N5/PPP2PPP/R1BQKB1R b KQkq - 2 5 # level=2 central play
+r1bqkb1r/1ppp1ppp/p1n2n2/4p3/B3P3/5N2/PPPP1PPP/RNBQ1RK1 b kq - 3 5 # level=2 king safety
+rn1qkbnr/ppp2ppp/3p4/4P3/4P3/5b2/PPP2PPP/RNBQKB1R w KQkq - 0 5 # level=2 calculate the recapture
+7k/8/5K2/8/8/8/8/R7 w - - 0 1 # level=1 convert a basic ending
+7k/8/5K2/8/8/8/8/3R4 w - - 0 1 # level=1 convert a basic ending
+k7/8/5K2/8/8/8/8/3R4 w - - 0 1 # level=1 convert a basic ending
+k7/8/5K2/8/8/8/8/7R w - - 0 1 # level=1 convert a basic ending
+7k/8/4K3/8/8/8/8/R7 w - - 0 1 # level=1 convert a basic ending
+7k/8/4K3/8/8/8/8/3R4 w - - 0 1 # level=1 convert a basic ending
+k7/8/4K3/8/8/8/8/3R4 w - - 0 1 # level=1 convert a basic ending
+k7/8/4K3/8/8/8/8/7R w - - 0 1 # level=1 convert a basic ending
+7k/8/3K4/8/8/8/8/R7 w - - 0 1 # level=1 convert a basic ending
+7k/8/3K4/8/8/8/8/3R4 w - - 0 1 # level=1 convert a basic ending
+k7/8/3K4/8/8/8/8/3R4 w - - 0 1 # level=1 convert a basic ending
+k7/8/3K4/8/8/8/8/7R w - - 0 1 # level=1 convert a basic ending
+7k/8/2K5/8/8/8/8/R7 w - - 0 1 # level=1 convert a basic ending
+7k/8/2K5/8/8/8/8/3R4 w - - 0 1 # level=1 convert a basic ending
+k7/8/2K5/8/8/8/8/3R4 w - - 0 1 # level=1 convert a basic ending
+k7/8/2K5/8/8/8/8/7R w - - 0 1 # level=1 convert a basic ending
+7k/8/5K2/8/8/8/8/Q7 w - - 0 1 # level=1 convert a basic ending
+7k/8/5K2/8/8/8/8/3Q4 w - - 0 1 # level=1 convert a basic ending
+k7/8/5K2/8/8/8/8/3Q4 w - - 0 1 # level=1 convert a basic ending
+7k/8/4K3/8/8/8/8/3Q4 w - - 0 1 # level=1 convert a basic ending
+k7/8/4K3/8/8/8/8/3Q4 w - - 0 1 # level=1 convert a basic ending
+7k/8/3K4/8/8/8/8/3Q4 w - - 0 1 # level=1 convert a basic ending
+k7/8/3K4/8/8/8/8/3Q4 w - - 0 1 # level=1 convert a basic ending
+7k/8/2K5/8/8/8/8/3Q4 w - - 0 1 # level=1 convert a basic ending
+k7/8/2K5/8/8/8/8/3Q4 w - - 0 1 # level=1 convert a basic ending
+k7/8/2K5/8/8/8/8/7Q w - - 0 1 # level=1 convert a basic ending
+1k6/8/8/8/1P6/1K6/8/8 w - - 0 1 # level=1 pawn opposition
+1k6/8/8/1P6/1K6/8/8/8 w - - 0 1 # level=1 pawn opposition
+1k6/8/1P6/1K6/8/8/8/8 w - - 0 1 # level=1 pawn opposition
+2k5/8/8/8/2P5/2K5/8/8 w - - 0 1 # level=1 pawn opposition
+2k5/8/8/2P5/2K5/8/8/8 w - - 0 1 # level=1 pawn opposition
+2k5/8/2P5/2K5/8/8/8/8 w - - 0 1 # level=1 pawn opposition
+3k4/8/8/8/3P4/3K4/8/8 w - - 0 1 # level=1 pawn opposition
+3k4/8/8/3P4/3K4/8/8/8 w - - 0 1 # level=1 pawn opposition
+3k4/8/3P4/3K4/8/8/8/8 w - - 0 1 # level=1 pawn opposition
+4k3/8/8/8/4P3/4K3/8/8 w - - 0 1 # level=1 pawn opposition
+4k3/8/8/4P3/4K3/8/8/8 w - - 0 1 # level=1 pawn opposition
+4k3/8/4P3/4K3/8/8/8/8 w - - 0 1 # level=1 pawn opposition
+5k2/8/8/8/5P2/5K2/8/8 w - - 0 1 # level=1 pawn opposition
+5k2/8/8/5P2/5K2/8/8/8 w - - 0 1 # level=1 pawn opposition
+5k2/8/5P2/5K2/8/8/8/8 w - - 0 1 # level=1 pawn opposition
+6k1/8/8/8/6P1/6K1/8/8 w - - 0 1 # level=1 pawn opposition
+6k1/8/8/6P1/6K1/8/8/8 w - - 0 1 # level=1 pawn opposition
+6k1/8/6P1/6K1/8/8/8/8 w - - 0 1 # level=1 pawn opposition
