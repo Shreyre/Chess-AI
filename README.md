@@ -18,8 +18,9 @@ chess application or website.
 .\chess.ps1 dashboard
 ```
 
-Open **http://127.0.0.1:8765**. Choose an iteration count and click **Resume
-training**. The board updates during self-play; select another parallel game or
+Open **http://127.0.0.1:8765**. Choose **Iterations** and **Games per iteration**, then
+click **Resume training**. The game count applies to each iteration of the next
+session and is saved with the checkpoint. The board updates during self-play; select another parallel game or
 flip its orientation. Saved totals, outcomes, and loss charts update after each
 checkpoint. **Stop after this iteration** lets the current iteration finish and
 save. Closing the page or dashboard leaves training running.

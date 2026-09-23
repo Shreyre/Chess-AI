@@ -273,7 +273,7 @@ def train(args, device):
         maintain()
         teacher_records, teacher_priorities = [], []
         if config.get("teacher_data") and not external_only:
-            teacher_data = load_teacher(config["teacher_data"])
+            teacher_data = load_teacher(config["teacher_data"], iteration)
             teacher_records, teacher_priorities = (teacher_data[key] for key in ("records", "priorities"))
         if teacher_only and not teacher_records:
             raise ValueError("Teacher-only training requires --teacher-data")
@@ -290,7 +290,9 @@ def train(args, device):
             if stop_request.exists():
                 break
             if config.get("teacher_data") and not external_only:
-                teacher_data = load_teacher(config["teacher_data"])
+                # Release the previous shard before loading the next one.
+                teacher_data, teacher_records, teacher_priorities = None, [], []
+                teacher_data = load_teacher(config["teacher_data"], iteration)
                 stage = curriculum_stage(config, iteration)
                 eligible = [i for i, level in enumerate(teacher_data["levels"]) if level <= stage]
                 if not eligible:

@@ -9,6 +9,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -114,6 +115,21 @@ class DashboardChecks(unittest.TestCase):
                     urlopen(request)
                 self.assertEqual(error.exception.code, 400)
                 error.exception.close()
+                for games in (0, -1, 10001, 1.5, True, "3"):
+                    request = Request(address + "/api/start",
+                                      data=json.dumps(dict(iterations=1, games=games)).encode(),
+                                      headers={"Content-Type": "application/json"})
+                    with self.assertRaises(HTTPError) as error:
+                        urlopen(request)
+                    self.assertEqual(error.exception.code, 400)
+                    error.exception.close()
+                with patch("chess_ai.dashboard.subprocess.Popen") as launch:
+                    request = Request(address + "/api/start", data=b'{"iterations":2,"games":7}',
+                                      headers={"Content-Type": "application/json"})
+                    with urlopen(request) as response:
+                        self.assertTrue(json.load(response)["ok"])
+                    command = launch.call_args.args[0]
+                    self.assertEqual(command[command.index("--games") + 1], "7")
             finally:
                 server.shutdown()
                 worker.join()
@@ -132,7 +148,7 @@ class DashboardChecks(unittest.TestCase):
             self.assertEqual(state["saved_iteration"], 1)
             self.assertEqual(state["selected"]["ply"], 4)
             dashboard = Dashboard(root)
-            dashboard.start(100)
+            dashboard.start(100, games=3)
             try:
                 with self.assertRaises(ValueError):
                     dashboard.start(1)
@@ -153,6 +169,8 @@ class DashboardChecks(unittest.TestCase):
                 self.assertLess(final["saved_iteration"], 101)
                 self.assertFalse(final["active"])
                 self.assertFalse(final["stop_requested"])
+                self.assertEqual(final["config"]["games"], 3)
+                self.assertEqual(final["totals"]["games"], 2 + 3 * (final["saved_iteration"] - 1))
                 self.assertIn("Checkpoint saved", (root / "dashboard-training.log").read_text())
             finally:
                 if dashboard.process.poll() is None:

@@ -76,14 +76,18 @@ class Dashboard:
                     checkpoint_exists=(self.directory / "latest.pt").exists(),
                     stale=active and phase != "starting" and time.time() - state.get("updated_at", 0) > 30)
 
-    def start(self, iterations):
+    def start(self, iterations, games=None):
         if type(iterations) is not int or not 1 <= iterations <= 10000:
             raise ValueError("Choose between 1 and 10,000 iterations")
+        if games is not None and (type(games) is not int or not 1 <= games <= 10000):
+            raise ValueError("Choose between 1 and 10,000 games per iteration")
         with self.guard:
             if self.state()["active"]:
                 raise ValueError("Training is already running or its run lock still exists")
             command = [sys.executable, "-m", "chess_ai", "train", "--run-dir", str(self.directory),
                        "--iterations", str(iterations)]
+            if games is not None:
+                command += ["--games", str(games)]
             checkpoint = self.directory / "latest.pt"
             if checkpoint.exists():
                 command += ["--resume", str(checkpoint)]
@@ -150,7 +154,7 @@ def handler_for(dashboard):
                 if not isinstance(body, dict):
                     raise ValueError("Expected a JSON object")
                 if self.path == "/api/start":
-                    dashboard.start(body.get("iterations"))
+                    dashboard.start(body.get("iterations"), body.get("games"))
                 elif self.path == "/api/stop":
                     dashboard.stop()
                 else:

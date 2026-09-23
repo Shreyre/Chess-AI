@@ -42,7 +42,14 @@ def teacher_record(board, infos):
             torch.from_numpy(policy), float(2 * wdl.expectation() - 1), True)
 
 
-def load_teacher(path):
+def load_teacher(path, shard=0):
+    path = Path(path)
+    if path.is_dir():
+        paths = sorted(path.glob("*.pt"))
+        if not paths:
+            raise ValueError("Teacher directory has no completed datasets")
+        # ponytail: one shard per iteration bounds RAM; use cross-shard sampling if needed.
+        path = paths[shard % len(paths)]
     data = torch.load(path, map_location="cpu", weights_only=True)
     if data.get("format_version") != 1 or data.get("kind") != "teacher" or not data.get("records"):
         raise ValueError("Expected a nonempty teacher dataset")

@@ -20,17 +20,20 @@ def maintenance(model, directory, config, iteration, live):
         every = config.get("teacher_refresh_every", 0)
         if every and iteration - config.get("teacher_refresh_iteration", -every) >= every:
             progress("Refreshing teacher examples")
-            output = directory / "teacher" / f"teacher-{iteration:06d}.pt"
+            corpus = Path(config["teacher_data"]) if config.get("teacher_data") else None
+            sharded = corpus is not None and corpus.is_dir()
+            output = (corpus if sharded else directory / "teacher") / f"teacher-{iteration:06d}.pt"
             if not output.exists():
                 generate(SimpleNamespace(engine=config["teacher_engine"],
                          pgn=directory / "selfplay.pgn", fens=config.get("teacher_fens"),
                          samples=1024, recent_games=2000, nodes=20000,
                          seed=config["seed"] + iteration, output=output,
                          max_records=config.get("teacher_capacity", 20000),
-                         previous=config.get("teacher_data")), stop,
+                         previous=None if sharded else config.get("teacher_data")), stop,
                          lambda n: progress("Refreshing teacher examples", n), model=model)
             load_teacher(output)
-            config.update(teacher_data=str(output.resolve()), teacher_refresh_iteration=iteration)
+            config.update(teacher_data=str((corpus if sharded else output).resolve()),
+                          teacher_refresh_iteration=iteration)
         every = config.get("gate_every", 0)
         if not every or iteration - config.get("gate_iteration", -every) < every or stop():
             return
