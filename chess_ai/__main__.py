@@ -42,6 +42,13 @@ def fraction(value):
     return number
 
 
+def mate_moves(value):
+    number = nonnegative(value)
+    if number > 10:
+        raise argparse.ArgumentTypeError("must be in 0..10")
+    return number
+
+
 def valid_board(fen):
     board = chess.Board(fen)
     if not board.is_valid():
@@ -69,7 +76,8 @@ def play(args, model):
                 print(error)
                 continue
         else:
-            move, _ = select_move(model, board, args.simulations)
+            move, _ = select_move(model, board, args.simulations,
+                                  mate_moves=args.mate_moves, mate_nodes=args.mate_nodes)
             print("AI:", board.san(move))
         board.push(move)
     print("\n" + str(board) + "\nResult: " + board.result())
@@ -105,7 +113,7 @@ def main():
     trainer.add_argument("--teacher-engine", type=Path)
     trainer.add_argument("--teacher-fens", type=Path)
     for name, default in DEFAULTS.items():
-        kind = (fraction if name in ("teacher_fraction", "priority_fraction") else learning_rate if name == "learning_rate"
+        kind = (mate_moves if name == "mate_moves" else fraction if name in ("teacher_fraction", "priority_fraction") else learning_rate if name == "learning_rate"
                 else nonnegative if name in ("seed", "temperature_plies", "opening_plies", "teacher_refresh_every", "gate_every", "curriculum_every", "postgame_nodes") else positive)
         trainer.add_argument("--" + name.replace("_", "-"), type=kind,
                              help=f"Default for new runs: {default}; otherwise keep checkpoint setting")
@@ -124,6 +132,10 @@ def main():
         child.add_argument("--simulations", type=positive, default=128)
         if command in ("play", "analyze"):
             child.add_argument("--fen", default=chess.STARTING_FEN)
+            child.add_argument("--mate-moves", type=mate_moves, default=3,
+                               help="Prove shortest mates up to N moves; 0 disables")
+            child.add_argument("--mate-nodes", type=positive, default=512,
+                               help="Maximum move edges examined by mate proof per position")
         if command == "play":
             child.add_argument("--color", choices=("white", "black"), default="white")
         if command == "assess":
@@ -167,10 +179,12 @@ def main():
                 assess(args, model)
             else:
                 board = valid_board(args.fen)
-                move, search = select_move(model, board, args.simulations)
+                move, search = select_move(model, board, args.simulations,
+                                          mate_moves=args.mate_moves, mate_nodes=args.mate_nodes)
                 print(json.dumps(dict(move=move.uci() if move else None,
                                       san=board.san(move) if move else None,
                                       value=search.root.value, visits=search.root.visits,
+                                      mate_in=search.mate_in, mate_nodes=search.mate_nodes,
                                       iteration=data["iteration"], result=board.result()), indent=2))
     except (ValueError, OSError, KeyError, RuntimeError) as error:
         parser.exit(1, f"Error: {error}\n")

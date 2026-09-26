@@ -27,14 +27,22 @@ def teacher_record(board, infos):
         if not info.get("pv") or info["pv"][0] not in moves or "score" not in info:
             raise ValueError("Teacher returned an illegal or unscored move")
         choices.append(moves.index(info["pv"][0]))
-        scores.append(info["score"].pov(board.turn).score(mate_score=10000))
+        scores.append(info["score"].pov(board.turn))
     if len(set(choices)) != len(choices):
         raise ValueError("Teacher returned duplicate moves")
-    scores = np.asarray(scores, dtype=np.float64)
-    # ponytail: 100-centipawn policy temperature; tune using held-out match results.
-    weights = np.exp(np.clip((scores - scores.max()) / 100, -60, 0))
+    best_score = max(scores)
+    if best_score.is_mate():
+        # Shortest reported winning mate; longest survival if every line loses.
+        # A centipawn softmax almost equally weights mate-in-1 and mate-in-5.
+        weights = np.asarray([score == best_score for score in scores], dtype=np.float64)
+    else:
+        # Losing mates cannot compete with a non-mate alternative.
+        cp = np.asarray([score.score() if not score.is_mate() else -np.inf for score in scores])
+        # ponytail: 100-centipawn policy temperature; tune using held-out match results.
+        weights = np.exp(np.maximum((cp - cp.max()) / 100, -60))
+        weights[[score.is_mate() for score in scores]] = 0
     policy[choices] = weights / weights.sum()
-    best = infos[int(scores.argmax())]
+    best = infos[scores.index(best_score)]
     wdl = (best["wdl"].pov(board.turn) if "wdl" in best else
            best["score"].pov(board.turn).wdl(model="sf16", ply=board.ply()))
     return (torch.from_numpy(encode(board)).half(),
@@ -163,12 +171,16 @@ def correct_screen_game(game, engine, nodes, threshold=100):
                 actual = next((info for info in infos if info["pv"][0] == move), None)
                 if actual is None:
                     actual = engine.analyse(board, chess.engine.Limit(nodes=nodes), root_moves=[move], game=object())
-                best = max(info["score"].pov(board.turn).score(mate_score=10000) for info in infos)
-                loss = best - actual["score"].pov(board.turn).score(mate_score=10000)
-                if loss >= threshold:
+                best_score = max(info["score"].pov(board.turn) for info in infos)
+                actual_score = actual["score"].pov(board.turn)
+                loss = best_score.score(mate_score=10000) - actual_score.score(mate_score=10000)
+                missed_mate_distance = best_score.is_mate() and best_score > actual_score
+                if loss >= threshold or missed_mate_distance:
                     rows[index] = teacher_record(board, infos)
                     report.append(dict(index=index, fen=board.fen(), played=move.uci(),
-                                       best=infos[0]["pv"][0].uci(), loss_cp=loss))
+                                       best=next(info["pv"][0].uci() for info in infos
+                                                 if info["score"].pov(board.turn) == best_score),
+                                       loss_cp=loss, mate_distance=bool(missed_mate_distance)))
             index += 1
         board.push(move)
     if index != len(rows):
@@ -249,6 +261,7 @@ def generate(args, stop=lambda: False, progress=lambda n: None, model=None):
         records = [records[i] for i in keep]
         levels, fens, difficulties = ([values[i] for i in keep] for values in (levels, fens, difficulties))
     data = dict(format_version=1, kind="teacher", records=records, validation_records=validation,
+                mate_policy="shortest reported win; longest reported loss",
                 validation_fens=validation_fens, validation_sources=validation_sources,
                 levels=levels, fens=fens, priorities=difficulties,
                 teacher=teacher_id, nodes=args.nodes, seed=args.seed,

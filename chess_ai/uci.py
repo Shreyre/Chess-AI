@@ -80,7 +80,8 @@ def run_uci(model, device, checkpoint, simulations=128):
         try:
             move, search = select_move(model, position, budget, stop=stopped, deadline=deadline)
             elapsed = int((time.monotonic() - start) * 1000)
-            emit(f"info nodes {search.root.visits} time {elapsed}")
+            score = f" score mate {search.mate_in}" if search.mate_in is not None else ""
+            emit(f"info nodes {search.root.visits + search.mate_nodes} time {elapsed}{score}")
             emit(f"bestmove {move.uci() if move else '0000'}")
         except Exception as error:
             emit("info string search failed: " + str(error).replace("\n", " "))

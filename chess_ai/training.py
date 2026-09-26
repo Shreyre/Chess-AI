@@ -23,7 +23,8 @@ DEFAULTS = dict(games=16, parallel_games=8, simulations=64, max_plies=512,
                 train_steps=100, learning_rate=0.001, channels=64, blocks=3,
                 seed=7, save_every=25, opening_plies=0, teacher_fraction=0.25,
                 teacher_refresh_every=0, gate_every=0, priority_fraction=0.0,
-                curriculum_every=0, postgame_nodes=0, teacher_capacity=20000)
+                curriculum_every=0, postgame_nodes=0, teacher_capacity=20000,
+                mate_moves=3, mate_nodes=512)
 
 
 def priority_probabilities(errors, fraction):
@@ -98,7 +99,8 @@ def self_play(model, config, rng, progress=print, live=None):
             if not active:
                 break
             searches = [Search(boards[i]) for i in active]
-            run_searches(model, searches, config["simulations"], rng, noise=True)
+            run_searches(model, searches, config["simulations"], rng, noise=True,
+                         mate_moves=config.get("mate_moves", 3), mate_nodes=config.get("mate_nodes", 512))
             for i, search in zip(active, searches):
                 board = boards[i]
                 moves, policy = search.policy(1)

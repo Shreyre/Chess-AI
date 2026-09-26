@@ -23,6 +23,8 @@
 4k3/8/8/8/3q4/2N5/8/4K3 w - - 0 1
 
 # Additional original practice positions.
+7k/8/8/4K3/8/8/8/3Q4 w - - 0 1 # level=2 mate in three; quiet king approach
+7k/8/8/5K2/8/8/8/3Q4 w - - 0 1 # level=1 mate in two; quiet king approach
 rnbqkbnr/pppp1ppp/8/4p3/6P1/5P2/PPPPP2P/RNBQKBNR b KQkq - 0 2 # level=0 mate in one
 r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4 # level=0 mate in one
 r1bqkbnr/pppp1ppp/8/4p3/2BnP3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4 # level=2 avoid the opening trap

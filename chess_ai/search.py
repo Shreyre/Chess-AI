@@ -7,6 +7,7 @@ import time
 import numpy as np
 
 from .model import evaluate_boards
+from .mate import shortest_mate
 
 
 @dataclass
@@ -48,6 +49,9 @@ class Search:
         self._working_board = self.board.copy(stack=True)
         self.root = Node()
         self.c_puct = c_puct
+        self.mate_move = None
+        self.mate_in = None
+        self.mate_nodes = 0
 
     def leaf(self):
         # Rewind the previous branch instead of copying the entire game each simulation.
@@ -68,6 +72,8 @@ class Search:
         moves = list(self.root.children)
         if not moves:
             return [], np.empty(0, dtype=np.float32)
+        if self.mate_move is not None:
+            return moves, np.array([move == self.mate_move for move in moves], dtype=np.float32)
         counts = np.array([self.root.children[move].visits for move in moves], dtype=float)
         if counts.sum() == 0:
             counts = np.array([self.root.children[move].prior for move in moves], dtype=float)
@@ -82,11 +88,21 @@ class Search:
 
 
 def run_searches(model, searches, simulations, rng=None, noise=False,
-                 stop=None, deadline=None):
+                 stop=None, deadline=None, mate_moves=3, mate_nodes=512):
     """Batch one leaf per independent game; training needs no worker processes."""
     if simulations < 1:
         raise ValueError("simulations must be >= 1")
+    if not 0 <= mate_moves <= 10 or mate_nodes < 1:
+        raise ValueError("mate moves must be in 0..10; mate nodes must be positive")
     active = [search for search in searches if terminal_value(search.board) is None]
+    for search in active:
+        search.mate_move, search.mate_in, search.mate_nodes = shortest_mate(
+            search.board, mate_moves, mate_nodes, stop, deadline)
+        if search.mate_move is not None:
+            search.root = Node(children={move: Node() for move in search.board.legal_moves})
+            # One completed proof, not fabricated MCTS visits.
+            backup([search.root, search.root.children[search.mate_move]], -1.0)
+    active = [search for search in active if search.mate_move is None]
     if not active:
         return
     predictions = evaluate_boards(model, [search.board for search in active])

@@ -197,6 +197,44 @@ Terminal chess accepts SAN (`Nf3`, `O-O`) or UCI (`g1f3`, `e7e8q`) moves:
 The reported value is an uncalibrated outcome estimate from the side to move,
 between -1 and +1. It is not a centipawn score or rating.
 
+### Prefer the shortest forced mate
+
+Before neural search, all play paths (including self-play, UCI and the screen
+player) try an exhaustive mate proof. The attacker chooses a continuation;
+every legal opponent reply must still allow mate, including draw claims by the
+defender. The search tries mate in one, then two, then three. A returned proof
+therefore gives the minimum worst-case mate distance from that position.
+It includes quiet moves, promotions and repetition history.
+
+The default budget is **512 move edges per position**, searching up to mate in
+three. Budget exhaustion means **unproven**, and falls back to normal MCTS;
+it does not mean there is no mate. This keeps a 100-game training batch bounded.
+No engine or extra dependency is used during play. Increase the budget for
+deeper analysis, or set `--mate-moves 0` to disable proofs:
+
+```powershell
+.\chess.ps1 analyze --checkpoint runs/main/model.pt --fen "7k/8/8/4K3/8/8/8/3Q4 w - - 0 1" --mate-moves 3 --mate-nodes 20000
+.\chess.ps1 train --resume runs/main/latest.pt --iterations 20 --mate-moves 3 --mate-nodes 512
+```
+
+`play` also accepts these flags. Training saves the settings for later resumes;
+UCI and the screen player use the defaults. Analysis reports `mate_in` and
+`mate_nodes`; a null `mate_in` means unproven. UCI reports `score mate N` only
+for a proof. Restart running applications to load updated search code.
+
+Proven moves become one-hot self-play and screen-game policy targets. New
+Stockfish teacher datasets put their policy weight on the shortest reported
+winning mate (sharing weight among ties). If all analyzed moves lose by force,
+they prefer the longest reported survival; a non-mate alternative beats a
+reported losing mate. The value head still learns win/draw/loss, so there is no
+blanket penalty for long games or defensive repetition. Post-game reviews also
+correct slower mates even below their normal centipawn-loss threshold.
+
+Existing checkpoints and datasets remain compatible. Regenerate teacher data
+to apply the new labels; old files are not rewritten. Stockfish's finite-budget
+labels are teaching estimates, unlike an exhaustive proof from the mate search.
+Neither the network nor a bounded search guarantees finding every possible mate.
+
 ## Select a board anywhere on the Windows desktop
 
 Run the standalone controller from Command Prompt:
