@@ -90,6 +90,11 @@ class DashboardChecks(unittest.TestCase):
             board = chess.Board()
             board.push_uci("e2e4")
             live.boards([board], 0, 1, force=True)
+            score = dict(accepted_rate=130/398, accepted_solved=130, puzzles=398,
+                         accepted_iteration=937, candidate_iteration=938,
+                         candidate_solved=125, status='rejected', simulations=64,
+                         device='cpu', puzzle_sha256='test', version=1)
+            live.update(force=True, puzzle_gate=score)
             server = ThreadingHTTPServer(("127.0.0.1", 0), handler_for(Dashboard(root)))
             worker = threading.Thread(target=server.serve_forever, daemon=True)
             worker.start()
@@ -101,6 +106,7 @@ class DashboardChecks(unittest.TestCase):
                 self.assertEqual(state["selected"]["fen"], board.fen())
                 self.assertIn("<svg", state["board_svg"])
                 self.assertFalse(state["active"])
+                self.assertEqual(state['puzzle_gate'], score)
                 with urlopen(address) as response:
                     self.assertIn(b"Training room", response.read())
                 request = Request(address + "/api/start", data=b'{"iterations":1}',

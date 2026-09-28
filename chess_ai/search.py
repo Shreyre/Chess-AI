@@ -7,7 +7,7 @@ import time
 import numpy as np
 
 from .model import evaluate_boards
-from .mate import shortest_mate
+from .mate import immediate_mate_blunders, shortest_mate
 
 
 @dataclass
@@ -52,6 +52,7 @@ class Search:
         self.mate_move = None
         self.mate_in = None
         self.mate_nodes = 0
+        self.mate_blunders = set()
 
     def leaf(self):
         # Rewind the previous branch instead of copying the entire game each simulation.
@@ -62,7 +63,9 @@ class Search:
         path = [node]
         while node.children:
             scale = self.c_puct * math.sqrt(node.visits + 1)
-            move, node = max(node.children.items(), key=lambda item:
+            candidates = ((move, child) for move, child in node.children.items()
+                          if node is not self.root or move not in self.mate_blunders)
+            move, node = max(candidates, key=lambda item:
                              -item[1].value + scale * item[1].prior / (1 + item[1].visits))
             board.push(move)
             path.append(node)
@@ -77,11 +80,16 @@ class Search:
         counts = np.array([self.root.children[move].visits for move in moves], dtype=float)
         if counts.sum() == 0:
             counts = np.array([self.root.children[move].prior for move in moves], dtype=float)
+        allowed = np.array([move not in self.mate_blunders for move in moves])
+        counts[~allowed] = 0
+        if counts.sum() == 0:
+            counts = allowed.astype(float)
         if temperature <= 0:
             probs = np.zeros(len(moves))
             probs[counts.argmax()] = 1.0
         else:
             logs = np.log(np.maximum(counts, 1e-30)) / temperature
+            logs[~allowed] = -np.inf
             probs = np.exp(logs - logs.max())
             probs /= probs.sum()
         return moves, probs.astype(np.float32)
@@ -105,6 +113,8 @@ def run_searches(model, searches, simulations, rng=None, noise=False,
     active = [search for search in active if search.mate_move is None]
     if not active:
         return
+    for search in active:
+        search.mate_blunders = immediate_mate_blunders(search.board, stop, deadline)
     predictions = evaluate_boards(model, [search.board for search in active])
     for search, prediction in zip(active, predictions):
         expand(search.root, prediction)
@@ -114,6 +124,14 @@ def run_searches(model, searches, simulations, rng=None, noise=False,
             values = rng.dirichlet(np.full(len(search.root.children), 0.3))
             for child, value in zip(search.root.children.values(), values):
                 child.prior = 0.75 * child.prior + 0.25 * value
+        if search.mate_blunders:
+            allowed = [child for move, child in search.root.children.items()
+                       if move not in search.mate_blunders]
+            total = sum(child.prior for child in allowed)
+            for child in allowed:
+                child.prior = child.prior / total if total else 1 / len(allowed)
+            for move in search.mate_blunders:
+                search.root.children[move].prior = 0.0
     # ponytail: rebuild each move; retain subtrees if profiling shows search reuse matters.
     for _ in range(simulations):
         if ((stop is not None and stop.is_set()) or

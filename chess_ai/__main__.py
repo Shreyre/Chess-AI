@@ -1,6 +1,7 @@
 """Command-line training, playing, analysis, and evaluation."""
 
 import argparse
+from contextlib import ExitStack
 import json
 from pathlib import Path
 import sys
@@ -9,6 +10,7 @@ import chess
 import torch
 
 from .model import choose_device, load_model
+from .engine import engine_move, open_engine
 from .search import select_move
 from .training import DEFAULTS, train
 from .uci import run_uci
@@ -56,7 +58,7 @@ def valid_board(fen):
     return board
 
 
-def play(args, model):
+def play(args, model, engine=None):
     board = valid_board(args.fen)
     human = args.color == "white"
     while not board.is_game_over():
@@ -76,8 +78,11 @@ def play(args, model):
                 print(error)
                 continue
         else:
-            move, _ = select_move(model, board, args.simulations,
-                                  mate_moves=args.mate_moves, mate_nodes=args.mate_nodes)
+            if engine is not None:
+                move = engine_move(engine, board, args.engine_nodes)
+            else:
+                move, _ = select_move(model, board, args.simulations,
+                                      mate_moves=args.mate_moves, mate_nodes=args.mate_nodes)
             print("AI:", board.san(move))
         board.push(move)
     print("\n" + str(board) + "\nResult: " + board.result())
@@ -109,12 +114,16 @@ def main():
     trainer.add_argument("--resume", help="Resume a full latest.pt checkpoint")
     trainer.add_argument("--external-only", action="store_true", help="Learn from pending completed screen games, without new self-play")
     trainer.add_argument("--teacher-data", type=Path, help="Offline teacher dataset; saved for subsequent resumes")
+    trainer.add_argument("--puzzle-data", type=Path,
+                         help="Fixed puzzle JSONL: accept only strict improvements after every update batch")
+    trainer.add_argument("--tactics-data", type=Path,
+                         help="Separate training puzzle JSONL for supervised policy practice")
     trainer.add_argument("--teacher-only", action="store_true", help="Warm up on teacher examples without generating self-play")
     trainer.add_argument("--teacher-engine", type=Path)
     trainer.add_argument("--teacher-fens", type=Path)
     for name, default in DEFAULTS.items():
-        kind = (mate_moves if name == "mate_moves" else fraction if name in ("teacher_fraction", "priority_fraction") else learning_rate if name == "learning_rate"
-                else nonnegative if name in ("seed", "temperature_plies", "opening_plies", "teacher_refresh_every", "gate_every", "curriculum_every", "postgame_nodes") else positive)
+        kind = (mate_moves if name == "mate_moves" else fraction if name in ("teacher_fraction", "priority_fraction") else learning_rate if name in ("learning_rate", "tactics_learning_rate")
+                else nonnegative if name in ("seed", "temperature_plies", "opening_plies", "teacher_refresh_every", "gate_every", "curriculum_every", "postgame_nodes", "tactics_steps") else positive)
         trainer.add_argument("--" + name.replace("_", "-"), type=kind,
                              help=f"Default for new runs: {default}; otherwise keep checkpoint setting")
     teacher = sub.add_parser("teach", help="Generate offline training targets with a UCI Stockfish engine")
@@ -126,10 +135,14 @@ def main():
     teacher.add_argument("--nodes", type=positive, default=20000)
     teacher.add_argument("--seed", type=nonnegative, default=7)
     teacher.add_argument("--output", type=Path, required=True)
-    for command in ("play", "analyze", "evaluate", "uci", "assess"):
+    for command in ("play", "analyze", "evaluate", "uci", "assess", "puzzles"):
         child = sub.add_parser(command)
         child.add_argument("--checkpoint", required=True, help="Saved .pt model or training checkpoint")
         child.add_argument("--simulations", type=positive, default=128)
+        if command in ("play", "analyze", "puzzles"):
+            child.add_argument("--engine", type=Path,
+                               help="Use this local UCI engine instead of the neural model for decisions")
+            child.add_argument("--engine-nodes", type=positive, default=20000)
         if command in ("play", "analyze"):
             child.add_argument("--fen", default=chess.STARTING_FEN)
             child.add_argument("--mate-moves", type=mate_moves, default=3,
@@ -140,6 +153,10 @@ def main():
             child.add_argument("--color", choices=("white", "black"), default="white")
         if command == "assess":
             child.add_argument("--teacher-data", type=Path, required=True)
+            child.add_argument("--output", type=Path)
+        if command == "puzzles":
+            child.add_argument("--puzzles", type=Path, required=True,
+                               help="Local Lichess-format JSONL; first move is the opponent's setup")
             child.add_argument("--output", type=Path)
         if command == "evaluate":
             child.add_argument("--opponent", default="random", help="random or another checkpoint path")
@@ -167,29 +184,46 @@ def main():
         if args.command == "train":
             train(args, device)
         else:
-            model, data = load_model(args.checkpoint, device)
-            if args.command == "uci":
-                run_uci(model, device, args.checkpoint, args.simulations)
-            elif args.command == "play":
-                play(args, model)
-            elif args.command == "evaluate":
-                evaluate(args, model, device)
-            elif args.command == "assess":
-                from .teacher import assess
-                assess(args, model)
-            else:
-                board = valid_board(args.fen)
-                move, search = select_move(model, board, args.simulations,
-                                          mate_moves=args.mate_moves, mate_nodes=args.mate_nodes)
-                print(json.dumps(dict(move=move.uci() if move else None,
-                                      san=board.san(move) if move else None,
-                                      value=search.root.value, visits=search.root.visits,
-                                      mate_in=search.mate_in, mate_nodes=search.mate_nodes,
-                                      iteration=data["iteration"], result=board.result()), indent=2))
+            with ExitStack() as stack:
+                engine = (stack.enter_context(open_engine(args.engine))
+                          if getattr(args, "engine", None) else None)
+                run_command(args, device, engine)
     except (ValueError, OSError, KeyError, RuntimeError) as error:
         parser.exit(1, f"Error: {error}\n")
     except KeyboardInterrupt:
         print("\nStopped.", file=sys.stderr)
+
+
+def run_command(args, device, engine=None):
+    model, data = load_model(args.checkpoint, device)
+    if args.command == "uci":
+        run_uci(model, device, args.checkpoint, args.simulations)
+    elif args.command == "play":
+        play(args, model, engine)
+    elif args.command == "evaluate":
+        evaluate(args, model, device)
+    elif args.command == "assess":
+        from .teacher import assess
+        assess(args, model)
+    elif args.command == "puzzles":
+        from .puzzles import assess
+        assess(args, model, data["iteration"], engine)
+    else:
+        board = valid_board(args.fen)
+        if engine is not None:
+            move = engine_move(engine, board, args.engine_nodes)
+            print(json.dumps(dict(move=move.uci() if move else None,
+                                  san=board.san(move) if move else None,
+                                  decision_method="local_uci_engine", engine_id=engine.id,
+                                  engine_nodes=args.engine_nodes, result=board.result()), indent=2))
+            return
+        move, search = select_move(model, board, args.simulations,
+                                  mate_moves=args.mate_moves, mate_nodes=args.mate_nodes)
+        print(json.dumps(dict(move=move.uci() if move else None,
+                              san=board.san(move) if move else None,
+                              value=search.root.value, visits=search.root.visits,
+                              mate_in=search.mate_in, mate_nodes=search.mate_nodes,
+                              iteration=data["iteration"], result=board.result()), indent=2))
 
 
 if __name__ == "__main__":

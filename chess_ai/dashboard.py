@@ -58,7 +58,7 @@ class Dashboard:
         elif locked:
             if owner != state.get("pid"):
                 phase = "initializing"
-        elif not active and phase in ("initializing", "selfplay", "learning", "saving"):
+        elif not active and phase in ("initializing", "selfplay", "learning", "saving", "evaluating"):
             phase = "stopped"
         snapshots = state.get("boards", [])
         selected = next((board for board in snapshots if board["id"] == game),
@@ -71,6 +71,7 @@ class Dashboard:
                                       "square dark lastmove": "#a0bb7c", "margin": "#f6f8fa",
                                       "coord": "#526579"})
         return dict(state, phase=phase, active=active, locked=locked,
+                    puzzle_gate=state.get("puzzle_gate", state.get("config", {}).get("puzzle_gate")),
                     run_name=self.directory.name, metrics=metrics, selected=selected,
                     board_svg=svg, stop_requested=locked and (self.directory / ".stop-request").exists(),
                     checkpoint_exists=(self.directory / "latest.pt").exists(),
@@ -99,7 +100,7 @@ class Dashboard:
     def stop(self):
         with self.guard:
             state = self.state()
-            if not state["locked"] or state["phase"] not in ("selfplay", "learning", "saving"):
+            if not state["locked"] or state["phase"] not in ("selfplay", "learning", "saving", "evaluating"):
                 raise ValueError("Wait for training to start before requesting a stop")
             (self.directory / ".stop-request").write_text("stop after checkpoint\n", encoding="utf-8")
 

@@ -35,6 +35,8 @@ def maintenance(model, directory, config, iteration, live):
             config.update(teacher_data=str((corpus if sharded else output).resolve()),
                           teacher_refresh_iteration=iteration)
         every = config.get("gate_every", 0)
+        if config.get("puzzle_data"):
+            return  # Every update already passes the strict puzzle gate before publication.
         if not every or iteration - config.get("gate_iteration", -every) < every or stop():
             return
         best = directory / "best.pt"

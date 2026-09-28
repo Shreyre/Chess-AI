@@ -10,13 +10,68 @@ import chess.engine
 import chess.pgn
 import numpy as np
 
-from chess_ai.mate import shortest_mate
+from chess_ai.mate import immediate_mate_blunders, shortest_mate
 from chess_ai.model import move_index
 from chess_ai.search import Search, run_searches
 from chess_ai.teacher import correct_screen_game, teacher_record
 
 
 class MateChecks(unittest.TestCase):
+    def test_defense_rejects_proven_blunders_even_with_bad_network_and_noise(self):
+        for board in (chess.Board('r5k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1'),
+                      chess.Board('r5k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1').mirror()):
+            bad = chess.Move.from_uci('g1h1' if board.turn else 'g8h8')
+            original = board.fen(), list(board.move_stack)
+            self.assertEqual(immediate_mate_blunders(board), {bad})
+            def misleading(model, boards):
+                results = []
+                for b in boards:
+                    moves = list(b.legal_moves)
+                    probs = np.array([float(m == bad) for m in moves])
+                    if not probs.sum():
+                        probs[:] = 1 / len(moves)
+                    results.append((moves, probs, 0.0))
+                return results
+            for noise in (False, True):
+                search = Search(board)
+                with patch('chess_ai.search.evaluate_boards', side_effect=misleading):
+                    run_searches(None, [search], 1, np.random.default_rng(7),
+                                 noise=noise, mate_moves=0)
+                self.assertEqual(search.root.children[bad].visits, 0)
+                for temperature in (0, 1, 100):
+                    moves, policy = search.policy(temperature)
+                    self.assertEqual(moves, list(board.legal_moves))
+                    self.assertEqual(policy[moves.index(bad)], 0)
+                    self.assertAlmostEqual(float(policy.sum()), 1, places=6)
+            self.assertEqual((board.fen(), board.move_stack), original)
+
+    def test_defense_handles_draws_forced_loss_and_interruption(self):
+        board = chess.Board('r5k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1')
+        board.halfmove_clock = 149
+        # Kh1 ends the game immediately under the automatic 75-move rule.
+        self.assertNotIn(chess.Move.from_uci('g1h1'), immediate_mate_blunders(board))
+        stopped = threading.Event(); stopped.set()
+        self.assertEqual(immediate_mate_blunders(board, stop=stopped), set())
+        self.assertEqual(immediate_mate_blunders(board, deadline=time.monotonic()-1), set())
+        board = chess.Board('7k/5K2/8/8/8/8/8/3R4 b - - 0 1')
+        # Independent enumeration: no exclusions when every legal move loses.
+        losses = set()
+        for move in board.legal_moves:
+            child = board.copy(); child.push(move)
+            if shortest_mate(child, 1, 218)[0] is not None:
+                losses.add(move)
+        self.assertEqual(losses, set(board.legal_moves))
+        self.assertEqual(immediate_mate_blunders(board), set())
+        # Interrupt inside a reply loop; caller history must remain unchanged.
+        board = chess.Board()
+        for token in ['g1f3', 'g8f6', 'f3g1', 'f6g8'] * 2:
+            board.push_uci(token)
+        original = board.fen(), list(board.move_stack)
+        stop = SimpleNamespace(is_set=lambda: next(checks))
+        checks = iter([False] * 10 + [True])
+        self.assertEqual(immediate_mate_blunders(board, stop=stop), set())
+        self.assertEqual((board.fen(), board.move_stack), original)
+
     def test_shortest_mates_in_both_colors_including_quiet_moves(self):
         positions = [('7k/5Q2/6K1/8/8/8/8/8 w - - 0 1', 1),
                      ('7k/8/5K2/8/8/8/8/3R4 w - - 0 1', 2),

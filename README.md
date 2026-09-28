@@ -32,6 +32,67 @@ saved in `dashboard-training.log`. Use `--run-dir runs/experiment --port 8766` t
 watch a different run. Old checkpoints work unchanged; live board data appears
 when training runs with this version.
 
+### Keep only improvements in neural puzzle accuracy
+
+```powershell
+.\chess.ps1 train --resume runs/main/latest.pt --iterations 20 --puzzle-data runs/hf-puzzles-v1/benchmark.jsonl
+```
+
+Stop an existing trainer after its checkpoint before enabling this setting. The
+benchmark path and score persist through dashboard/CLI resumes. The dashboard
+shows **Neural puzzle accuracy** for the accepted model, solved/total puzzles,
+accepted iteration, and the latest candidate's score and accept/reject result.
+No Stockfish assistance is used for this score.
+
+Every iteration (including teacher-only and screen learning) evaluates the whole
+fixed set with 64 neural simulations on CPU and the default mate/defense search.
+A candidate must solve **strictly more** puzzles: ties, regressions, and evaluation
+errors restore the previous weights **and optimizer** before saving or continuing.
+New experience, random-state advancement, and attempt counters are retained so a
+rejection does not repeat the identical update forever. Counts include attempted
+updates; the accepted model's iteration is recorded separately.
+
+`latest.pt` remains the resumable authority; `model.pt` and `best.pt` contain the
+accepted weights. This strict per-iteration selection replaces the periodic match
+selection when enabled; offline paired matches remain available. The input hash
+is pinned, and changed benchmark files/settings fail closed. Evaluation adds time
+to each iteration, and a stop request waits for evaluation and checkpoint saving.
+Repeated selection makes these puzzles a validation set, not an independent test
+of general chess strength. Keep separate puzzles and matches for that check.
+
+Dashboard contract: `GET /api/state` adds `puzzle_gate` (null when disabled).
+When enabled it contains `accepted_rate` in 0..1, `accepted_solved`, `puzzles`,
+`accepted_iteration`, `candidate_iteration`, `candidate_solved` (null on error),
+`status` (`baseline`, `accepted`, `rejected`, `error`), `simulations`, `device`,
+`puzzle_sha256`, `version`, and optional `error`. Phase `evaluating` remains
+stoppable at the checkpoint boundary. Existing response fields are unchanged.
+
+### Add supervised tactical practice
+
+```powershell
+.\chess.ps1 train --resume runs/main/latest.pt --iterations 20 --tactics-data runs/tactics-v2/train.jsonl --tactics-steps 750 --tactics-learning-rate 0.001
+```
+
+This adds a short policy-training phase after each normal learning batch. It
+learns the solver's moves from separate Lichess-format puzzles, including legal
+horizontal reflections where castling rights are absent. The shared feature
+network and value head are frozen during this phase, so its value predictions
+stay intact. Unknown puzzle outcomes are excluded from value loss. The phase
+starts a fresh policy optimizer and clears stale policy moments in the main
+optimizer afterwards; other optimizer states are preserved.
+
+The puzzle gate evaluates the combined update and rolls back both phases when
+the score does not improve. Training source games and symmetry-equivalent solver
+positions overlapping the configured benchmark are rejected. The data path,
+steps and learning rate persist on resume. Set `--tactics-steps 0` to disable it.
+It runs locally with existing dependencies; Stockfish is not used for decisions.
+
+The first measured trial used 9,995 training puzzles (43,910 position/move examples)
+and improved the fixed 398-puzzle score from 134/398 (33.7%) to 154/398 (38.7%) at
+64 simulations. A separate 1,000-puzzle test improved from 375/1000 (37.5%) to
+408/1000 (40.8%). These measurements do not promise continued improvement or an
+Elo gain. Data provenance, scripts and candidate reports are in `runs/tactics-v2/`.
+
 ### Train from PowerShell
 
 Dependencies are installed in `.venv`. From PowerShell in this folder:
@@ -209,7 +270,7 @@ It includes quiet moves, promotions and repetition history.
 The default budget is **512 move edges per position**, searching up to mate in
 three. Budget exhaustion means **unproven**, and falls back to normal MCTS;
 it does not mean there is no mate. This keeps a 100-game training batch bounded.
-No engine or extra dependency is used during play. Increase the budget for
+Default neural play uses no engine or extra dependency. Increase the budget for
 deeper analysis, or set `--mate-moves 0` to disable proofs:
 
 ```powershell
@@ -234,6 +295,75 @@ Existing checkpoints and datasets remain compatible. Regenerate teacher data
 to apply the new labels; old files are not rewritten. Stockfish's finite-budget
 labels are teaching estimates, unlike an exhaustive proof from the mate search.
 Neither the network nor a bounded search guarantees finding every possible mate.
+
+### Avoid immediate checkmate blunders
+
+When no winning mate is proven, search checks each legal move for an opponent's
+mate-in-one reply. If at least one alternative is verified not to allow mate in
+one, proven blunders are excluded from root search and receive exactly zero
+policy probability, including during self-play exploration. All legal move
+indices stay in the training target so the network learns to avoid those moves.
+This applies to terminal play, analysis, UCI, evaluation and the screen player.
+
+The guard preserves immediate wins and automatic draws. If every move allows
+mate, it leaves the move set intact. It respects stop/time limits; unfinished
+checks remain unclassified. It does not prove that an alternative is safe from
+longer tactics. No extra model, dependency or checkpoint conversion is needed;
+restart running players/trainers to load the updated code.
+
+### Evaluate unfamiliar tactical puzzles
+
+The `puzzles` command reads a local JSONL file with the official
+[Lichess puzzle fields](https://huggingface.co/datasets/Lichess/chess-puzzles):
+`PuzzleId`, `FEN`, `Moves`, `Rating`, and `Themes` (a list). The dataset is CC0.
+It validates every move, plays the first move as the opponent's setup, then tests
+each AI move against the solution, using the supplied opponent replies.
+Alternative immediate checkmates are accepted. Other mismatches may be good
+chess moves; this is a solution-line diagnostic, not an Elo measurement.
+
+```powershell
+.\chess.ps1 puzzles --checkpoint runs/main/model.pt --puzzles runs/hf-puzzles-v1/benchmark.jsonl --simulations 64 --device cpu --output runs/hf-puzzles-v1/current.json
+```
+
+Reports include first-move accuracy, complete-puzzle solves, theme and rating
+breakdowns, failed decisions, model iteration, and the input file's SHA-256.
+The benchmark file is never imported by this command or modified during scoring.
+Use the same file and search budget when comparing checkpoints.
+
+The initial local Hugging Face sample lives in `runs/hf-puzzles-v1/`: 1,000
+puzzles from ten reproducibly selected pages. `manifest.json` records the source,
+observed revision, offsets and split. Whole source games are reserved together,
+and solver position groups (including mirrors) do not overlap the new training
+and benchmark partitions. Detected retained-teacher/replay overlaps are removed
+from evaluation; discarded historical experience is not audited, so complete
+historical independence is not claimed. Dataset Viewer responses are not pinned
+to a revision; the saved JSONL and its content hash make local reruns repeatable.
+
+`training.fen` contains only training solver positions plus the existing practice
+lessons. It can use the existing Stockfish `teach` pipeline. Keep
+`benchmark.jsonl` out of training and choose a new reserved set if it is ever
+used to tune the model repeatedly. Puzzle ratings describe puzzle difficulty,
+not this AI's playing strength.
+
+### Optional stronger local decisions
+
+`play`, `analyze` and `puzzles` accept `--engine` to choose moves with an installed
+local Stockfish executable. This replaces neural MCTS for those commands; it does
+not improve or retrain the network. Self-play, UCI and screen play retain their
+neural search. No cloud service, model download or extra dependency is needed.
+
+```powershell
+.\chess.ps1 play --checkpoint runs/main/model.pt --engine runs/tools/stockfish-19/stockfish/stockfish-windows-x86-64-universal.exe --color white
+.\chess.ps1 puzzles --checkpoint runs/hf-puzzles-v1/baseline.pt --puzzles runs/hf-puzzles-v1/benchmark.jsonl --engine runs/tools/stockfish-19/stockfish/stockfish-windows-x86-64-universal.exe --output runs/hf-puzzles-v1/assisted.json
+```
+
+`--engine-nodes 20000` is the default budget per decision, with one engine thread
+and 64 MB hash. Reports identify the engine, decision method, node budget and
+elapsed time; neural simulation counts are null for engine runs. The checkpoint
+is still loaded for command compatibility but does not influence engine moves.
+Engine state resets between decisions to avoid puzzle-order effects. The same
+solution-line scoring rules apply to both modes. Finite engine analysis does not
+certify a shortest mate; only the neural mode's exhaustive mate proof does that.
 
 ## Select a board anywhere on the Windows desktop
 

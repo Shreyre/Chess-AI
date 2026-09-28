@@ -1,6 +1,7 @@
 """Self-play, replay training, and resumable iterations."""
 
 from collections import deque
+from copy import deepcopy
 import json
 import math
 from pathlib import Path
@@ -24,7 +25,7 @@ DEFAULTS = dict(games=16, parallel_games=8, simulations=64, max_plies=512,
                 seed=7, save_every=25, opening_plies=0, teacher_fraction=0.25,
                 teacher_refresh_every=0, gate_every=0, priority_fraction=0.0,
                 curriculum_every=0, postgame_nodes=0, teacher_capacity=20000,
-                mate_moves=3, mate_nodes=512)
+                mate_moves=3, mate_nodes=512, tactics_steps=0, tactics_learning_rate=0.001)
 
 
 def priority_probabilities(errors, fraction):
@@ -217,7 +218,9 @@ def train(args, device):
     overrides = {key: getattr(args, key) for key in DEFAULTS if getattr(args, key, None) is not None}
     if getattr(args, "teacher_data", None):
         overrides["teacher_data"] = str(Path(args.teacher_data).resolve())
-    for name in ("teacher_engine", "teacher_fens"):
+    if getattr(args, "puzzle_data", None):
+        overrides["puzzle_data"] = str(Path(args.puzzle_data).resolve())
+    for name in ("teacher_engine", "teacher_fens", "tactics_data"):
         if getattr(args, name, None):
             overrides[name] = str(Path(getattr(args, name)).resolve())
     directory = Path(args.run_dir or (Path(args.resume).parent if args.resume else "runs/main")).resolve()
@@ -270,8 +273,25 @@ def train(args, device):
             config.setdefault("curriculum_start", iteration)
         if config["postgame_nodes"] and not config.get("teacher_engine"):
             raise ValueError("Post-game corrections require --teacher-engine")
+        tactical_records = []
+        if config["tactics_steps"]:
+            if not config.get("tactics_data"):
+                raise ValueError("Tactical practice requires --tactics-data")
+            from .tactics import load_tactics
+            tactical_records = load_tactics(config["tactics_data"], config.get("puzzle_data"))
         live.update(force=True, iteration=iteration, saved_iteration=iteration,
                     target_iteration=iteration + args.iterations, config=config, totals=totals)
+        gate = None
+        if config.get("puzzle_data"):
+            from .puzzle_gate import PuzzleGate
+            gate = PuzzleGate(config, live)
+            gate.initialize(model, iteration)
+            # Persist the baseline with its weights before any candidate updates.
+            save_training(latest, model, optimizer, replay, iteration, config, rng, totals,
+                          data.get("metrics", {}) if args.resume else {}, screen_games)
+            accepted = model_snapshot(model, iteration) | {"selection": dict(config["puzzle_gate"])}
+            atomic_save(accepted, directory / "model.pt")
+            atomic_save(accepted, directory / "best.pt")
         maintain()
         teacher_records, teacher_priorities = [], []
         if config.get("teacher_data") and not external_only:
@@ -367,6 +387,7 @@ def train(args, device):
                 records = [replacements.get(row[0].numpy().tobytes(), row) for row in records]
             update_replay(replay, records, rng)
             losses = []
+            before = deepcopy((model.state_dict(), optimizer.state_dict())) if gate else None
             model.train()
             # Convert once: random indexing into a deque is linear.
             population = list(replay)
@@ -403,10 +424,17 @@ def train(args, device):
                 else:
                     losses.append(train_batch(model, optimizer, samples))
                 live.update(phase="learning", train_step=step + 1, loss=losses[-1])
+            tactical_loss = None
+            if tactical_records:
+                from .tactics import practice_tactics
+                tactical_loss = practice_tactics(model, optimizer, tactical_records,
+                    config["tactics_steps"], config["tactics_learning_rate"], rng, live)
             iteration += 1
+            decision = gate.check(model, optimizer, before, iteration) if gate else None
+            del before
             totals = {"games": totals["games"] + (0 if external_only or teacher_only else config["games"]) + len(imported),
                       "positions": totals["positions"] + len(records),
-                      "updates": totals["updates"] + steps}
+                      "updates": totals["updates"] + steps + (tactical_loss["updates"] if tactical_loss else 0)}
             metrics = dict(iteration=iteration, **totals, **outcomes, replay_positions=len(replay),
                            screen_games=len(imported),
                            teacher_positions=len(teacher_records), teacher_only=teacher_only,
@@ -414,12 +442,20 @@ def train(args, device):
                            value_positions=sum(row[4] for row in records),
                            seconds=round(time.monotonic() - started, 2),
                            **{key: float(np.mean([loss[key] for loss in losses])) for key in losses[0]})
+            if decision:
+                metrics["puzzle_gate"] = decision
+            if tactical_loss:
+                metrics["tactical_practice"] = tactical_loss
             live.update(force=True, phase="saving", train_step=steps)
             screen_games.update(imported)
             save_training(latest, model, optimizer, replay, iteration, config, rng, totals, metrics, screen_games)
-            atomic_save(model_snapshot(model, iteration), directory / "model.pt")
+            snapshot = model_snapshot(model, iteration)
+            if decision:
+                snapshot["selection"] = decision
+                atomic_save(snapshot, directory / "best.pt")
+            atomic_save(snapshot, directory / "model.pt")
             if iteration % config["save_every"] == 0:
-                atomic_save(model_snapshot(model, iteration), directory / f"model-{iteration:06d}.pt")
+                atomic_save(snapshot, directory / f"model-{iteration:06d}.pt")
             # The checkpoint is authoritative; logs may lag it if interrupted during writing.
             with (directory / "metrics.jsonl").open("a", encoding="utf-8") as output:
                 output.write(json.dumps(metrics) + "\n")
